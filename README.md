@@ -78,31 +78,41 @@ Update later with `pm-agent update`.
 
 ## Usage
 
-### Plan: `/pm:plan`
+There are two distinct ways the PM shows up, and it's worth understanding the difference:
 
-Opens a dedicated **PM planning session**. This is where you decide *what* to work on and
-*why* — dump ideas, turn rough thoughts into real tickets, sequence them, and promote the
-ready ones to the top of the queue. The PM never writes code here; it's your thinking
-partner and ticket steward.
+- **`/pm:plan` turns *this* session into the PM.** It loads the PM's brain into your
+  current Claude session — that session stops being a coder and *will not write code*. All
+  it does is plan the work with you through Linear tickets.
+- **The other commands invoke the PM as a background agent.** `/pm:capture`,
+  `/pm:checkpoint`, and `/pm:done` spawn the PM as a subagent to do one side task (file an
+  idea, commit a checkpoint, close out) and return. Your session stays the coding session
+  the whole time — they don't interrupt your workflow or change what you're doing.
+
+### Plan with the PM: `/pm:plan`
+
+Run this to **plan, not build**. Your session becomes the PM: a thinking partner and ticket
+steward that decides *what* to work on and *why* — dump ideas, turn rough thoughts into
+real tickets, sequence them, and promote the ready ones to the top of the queue. It works
+entirely through Linear and never touches code.
 
 Use it to start a work session, figure out what's next, line up a milestone, or talk
 through a decision that affects more than one ticket.
 
-### Build: `/pm:start`
+### Build: `/pm:build`
 
-Start a **coding session** on a ready ticket. In a fresh session, run `/pm:start` — it
+Start a **coding session** on a ready ticket. In a fresh session, run `/pm:build` — it
 pulls the top ready ticket (or one you name), creates its branch, and claims it **In
 Progress**. Do this **before writing any feature work**, so every change is tied to a
 ticket and a branch.
 
 ### While you're coding
 
+These spawn the PM as a subagent for a quick side task — you stay in your coding session:
+
 - **`/pm:capture <idea>`** — a bug or out-of-scope idea surfaces mid-task. File it to
   Linear without derailing what you're doing. Don't silently fix it — capture it.
 - **`/pm:checkpoint <issue>`** — at a commit boundary, have the PM commit the work you've
   staged with a ticket-linked message and log progress on the issue. Not a closeout.
-- **`/pm:plan`** — you need to diverge from the ticket, hit cross-ticket impact, or face a
-  call that needs buy-in. Route it through the PM instead of deciding alone.
 - **`/pm:done <issue>`** — the work is complete or its acceptance is approved. Hand it back
   to the PM to reconcile the ticket and close it. Don't self-merge or close issues
   yourself — the PM owns closeout.

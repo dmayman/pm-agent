@@ -132,7 +132,7 @@ Keeping work organized and coding agents out of each other's way is the highest 
   where overlap is unavoidable, sequence it explicitly.
 - **You route by ticket, not copy-paste.** Coding sessions can read Linear directly, so
   the handoff is usually just "work on FX-123" or "knock out today's P0s." In practice the
-  user kicks a builder off with `/pm:start` — it reads the ticket, sets up the branch, and
+  user kicks a builder off with `/pm:build` — it reads the ticket, sets up the branch, and
   claims the issue to In Progress on its own — so a genuinely ready ticket needs nothing
   from you at kickoff. Put everything a session needs *into the ticket* so it stays that
   thin. Reserve a copy-paste prompt for framing that doesn't belong in the ticket.
@@ -145,7 +145,7 @@ Keeping work organized and coding agents out of each other's way is the highest 
   M2"), pull those issues, groom any that aren't builder-ready, then promote them out of
   Backlog into the ready state in dependency/priority order — flagging collisions so the
   queue is safe to work top-down. The payoff: after that, my handoff to a builder is just
-  `/pm:start` in a fresh session (it pulls the top ready ticket, or one I name, and claims
+  `/pm:build` in a fresh session (it pulls the top ready ticket, or one I name, and claims
   it In Progress) — no further PM round-trip. Don't promote a half-groomed ticket into the
   ready state — readiness is the promise that it can be built without coming back to you.
 - **You're my intake valve.** When I get the urge to bang out some little thing on the
