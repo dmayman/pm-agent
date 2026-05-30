@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Block commits that would break the marketplace/plugin manifests.
+# Wired up via `core.hooksPath=.githooks` (set by the npm "prepare" script).
+set -uo pipefail
+
+if ! node bin/pm-agent.js validate >/dev/null 2>&1; then
+  echo "✗ pre-commit: manifest validation failed. Run 'npm run validate' to see details." >&2
+  exit 1
+fi

@@ -14,10 +14,19 @@ This repo is three things at once:
 ## Install the Claude Code plugin
 
 ```bash
-claude plugin marketplace add dmayman/pm-agent
-claude plugin install pm@pm-agent
+npm install -g pm-agent      # get the CLI
+pm-agent install             # register the marketplace + install the pm plugin
 # restart Claude Code to load it
 ```
+
+Or without the CLI, the plain Claude Code path:
+
+```bash
+claude plugin marketplace add dmayman/pm-agent
+claude plugin install pm@pm-agent
+```
+
+Update later with `pm-agent update` (or `npx pm-agent update`).
 
 The `pm` plugin provides a PM agent plus slash commands — `/pm:start`,
 `/pm:capture`, `/pm:checkpoint`, `/pm:plan`, `/pm:done` — that own Linear issue
@@ -42,14 +51,18 @@ pm-agent/
 
 ## Development
 
-Track your working copy instead of GitHub by adding this directory as a
-marketplace, then reload after edits:
+In dev you never use the install pathway — you point the `pm-agent` channel at
+your working tree, so Claude reads your live edits. From the repo root:
 
 ```bash
-claude plugin marketplace add ~/Documents/GitHub/pm-agent
-claude plugin install pm@pm-agent
-# edit files → claude plugin marketplace update pm-agent → reinstall → restart
+npm run dev          # point the channel at this working tree (then restart Claude Code)
+# edit agent / commands / hooks …
+npm run reload       # validate + clean-reinstall from the working tree (then restart)
+npm run validate     # check both manifests (--strict) without changing anything
 ```
+
+`dev` and `reload` are the same `pm-agent` CLI you ship — no separate tooling to
+keep in sync. Switch back to the published plugin anytime with `pm-agent install`.
 
 ### Channels
 

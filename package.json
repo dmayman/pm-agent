@@ -6,6 +6,13 @@
   "bin": {
     "pm-agent": "bin/pm-agent.js"
   },
+  "scripts": {
+    "dev": "node bin/pm-agent.js dev",
+    "reload": "node bin/pm-agent.js reload",
+    "validate": "node bin/pm-agent.js validate",
+    "version": "node scripts/sync-plugin-version.mjs && git add plugins/pm/.claude-plugin/plugin.json",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true"
+  },
   "files": [
     "bin",
     ".claude-plugin",
