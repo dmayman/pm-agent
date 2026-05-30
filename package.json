@@ -1,7 +1,7 @@
 {
   "name": "@dmayman/pm-agent",
   "version": "0.2.0",
-  "description": "A work-orchestration / project-management tool that ships a Claude Code plugin (pm). Roadmap: local database + self-hosted web UI to replace Linear.",
+  "description": "A Claude Code plugin that makes Linear your source of truth: a PM agent and /pm:* commands that scope ideas into tickets, sequence work, and keep coding sessions from colliding.",
   "type": "module",
   "publishConfig": {
     "access": "public"

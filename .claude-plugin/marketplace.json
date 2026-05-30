@@ -2,7 +2,7 @@
   "name": "pm-agent",
   "owner": { "name": "David Mayman" },
   "metadata": {
-    "description": "A work-orchestration / project-management tool that ships a Claude Code plugin (pm), with a roadmap to a local database and self-hosted web UI replacing Linear."
+    "description": "A Claude Code plugin (pm): a PM agent and /pm:* commands that scope work into Linear tickets, sequence it, and route coding sessions to avoid collisions."
   },
   "plugins": [
     {
