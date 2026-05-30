@@ -105,6 +105,16 @@ pulls the top ready ticket (or one you name), creates its branch, and claims it 
 Progress**. Do this **before writing any feature work**, so every change is tied to a
 ticket and a branch.
 
+### Formalize in-flight work: `/pm:branch`
+
+The missing middle between capture and build: you started coding *before* there was a
+ticket, and now this in-flight work needs to be put on rails. `/pm:branch` files the
+ticket, moves your uncommitted changes onto a proper `fx-<n>-<slug>` branch, and claims it
+**In Progress** — without losing work and without committing. (`/pm:capture` files a ticket
+but never touches your tree; `/pm:build` sets up a branch but assumes a ready ticket already
+exists.) It also handles the messier case where you'd already committed to `main`, rewinding
+the base safely. You stay the coding session and keep going.
+
 ### While you're coding
 
 These spawn the PM as a subagent for a quick side task — you stay in your coding session:
