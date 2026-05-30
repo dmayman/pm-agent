@@ -58,6 +58,33 @@ function fail(msg) {
   process.exit(1);
 }
 
+// Reload only makes sense against a working tree. Refuse if the channel is
+// bound to anything but a directory source (e.g. the published GitHub install),
+// so reload can't silently reinstall the wrong thing. Keeps reload dev-only.
+function assertDevInstall() {
+  const r = spawnSync("claude", ["plugin", "marketplace", "list", "--json"], {
+    encoding: "utf8",
+  });
+  if (r.error?.code === "ENOENT") fail("`claude` CLI not found on PATH.");
+  let entry;
+  try {
+    entry = JSON.parse(r.stdout).find((m) => m.name === MARKETPLACE);
+  } catch {
+    return; // Can't determine source — don't block on a parse hiccup.
+  }
+  if (!entry) {
+    fail(
+      `${MARKETPLACE} isn't installed in dev mode. Run \`pm-agent dev <path>\` first.`
+    );
+  }
+  if (entry.source !== "directory") {
+    fail(
+      `reload is dev-only: ${MARKETPLACE} is a "${entry.source}" source, not a working tree.\n` +
+        `  Use \`pm-agent dev <path>\` to track a local checkout, or \`pm-agent update\` for the published plugin.`
+    );
+  }
+}
+
 function restartReminder() {
   process.stdout.write(
     "\n⚠️  RESTART Claude Code to apply — plugins load at startup.\n"
@@ -116,6 +143,7 @@ function cmdDev(arg) {
 
 function cmdReload(arg) {
   const tree = resolveTree(arg);
+  assertDevInstall();
   process.stdout.write("▶ Validating…\n");
   if (!run(["plugin", "validate", tree, "--strict"], { tolerate: true })) {
     fail("Validation failed — fix the manifest before reloading (nothing changed).");
