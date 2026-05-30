@@ -1,86 +1,111 @@
 # pm-agent
 
-A work-orchestration / project-management tool. It ships a **Claude Code plugin
-(`pm`)** today, and is structured to grow into a self-hosted alternative to
-Linear: a local database and a web UI, all from one repo, installed with one
-command.
+A Claude Code plugin that makes **Linear the source of truth for what you work on**.
 
-This repo is three things at once:
+It adds a PM agent and a set of `/pm:*` commands. The PM scopes your ideas into Linear
+tickets, grooms and sequences them, and routes your coding sessions so they don't collide.
+Coding sessions claim a ticket up front and stay scoped to it — so you can pick up work
+with zero prep and run several sessions without them tripping over each other.
 
-- a **Claude Code marketplace** (`.claude-plugin/marketplace.json`),
-- an **npm package** (`npx pm-agent`, via `bin/pm-agent.js`),
-- a **monorepo** with room for the future server, web UI, and database.
+## Requirements
 
-## Install the Claude Code plugin
+- **Claude Code**
+- **A Linear account** with the **Linear MCP** connected (setup below). Linear is
+  required — the plugin keeps no state of its own.
+
+## Why Linear
+
+The plugin doesn't store your work anywhere itself. **Linear is the system of record**:
+every idea, ticket, decision, status, and closeout lives on a Linear issue or project, and
+the PM agent reads and writes it through the Linear MCP.
+
+That's what makes the whole thing work:
+
+- A handoff to a coding session is just *"work on FX-123"* — the session reads the ticket
+  from Linear and has everything it needs.
+- Ticket **status** is the work queue (Backlog → Ready → In Progress → Done), so you start
+  work without re-explaining it.
+- Because the PM can see what every session owns, it can sequence overlapping work instead
+  of letting two sessions edit the same files at once.
+
+## Install
 
 ```bash
-npm install -g @dmayman/pm-agent   # get the CLI (command is `pm-agent`)
+npm install -g @dmayman/pm-agent   # the installed command is `pm-agent`
 pm-agent install                   # register the marketplace + install the pm plugin
 # restart Claude Code to load it
 ```
 
-Or without the CLI, the plain Claude Code path:
+Or the plain Claude Code path, without the CLI:
 
 ```bash
 claude plugin marketplace add dmayman/pm-agent
 claude plugin install pm@pm-agent
 ```
 
-Update later with `pm-agent update` (or `npx @dmayman/pm-agent update`).
+Update later with `pm-agent update`.
 
-The `pm` plugin provides a PM agent plus slash commands — `/pm:start`,
-`/pm:capture`, `/pm:checkpoint`, `/pm:plan`, `/pm:done` — that own Linear issue
-tracking and git branching so coding sessions stay scoped to one ticket.
+## Connect Linear
 
-## Layout
+1. **Add the Linear MCP** to Claude Code:
 
-```
-pm-agent/
-├── .claude-plugin/marketplace.json   # this repo is a Claude marketplace
-├── package.json                      # this repo is also an npm package (npx pm-agent)
-├── bin/pm-agent.js                   # npx entrypoint / bootstrapper
-├── plugins/
-│   └── pm/                           # the Claude Code plugin (agent, commands, hooks)
-├── apps/
-│   ├── server/                       # FUTURE: local API + DB access (the Linear backend)
-│   └── web/                          # FUTURE: self-hosted web UI (the Linear replacement)
-└── packages/
-    ├── cli/                          # FUTURE: richer CLI surface
-    └── db/                           # FUTURE: schema + migrations
-```
+   ```bash
+   claude mcp add --transport http linear https://mcp.linear.app/mcp
+   ```
 
-## Development
+   (If that transport gives you trouble, the SSE endpoint is
+   `https://mcp.linear.app/sse`.)
 
-In dev you never use the install pathway — you point the `pm-agent` channel at
-your working tree, so Claude reads your live edits. From the repo root:
+2. **Authenticate** — open a Claude Code session and run `/mcp`, then complete the Linear
+   OAuth login in your browser. No API key needed. See
+   [Linear's MCP docs](https://linear.app/docs/mcp).
 
-```bash
-npm run dev          # point the channel at this working tree (then restart Claude Code)
-# edit agent / commands / hooks …
-npm run reload       # validate + clean-reinstall from the working tree (then restart)
-npm run validate     # check both manifests (--strict) without changing anything
-```
+3. **Tell the PM which Linear team/project this repo maps to.** In the repo where you'll
+   use the plugin, create `.claude/pm-memory.md` — a tiny, evergreen config file the PM
+   reads at the start of every session:
 
-`dev` and `reload` are the same `pm-agent` CLI you ship — no separate tooling to
-keep in sync. Switch back to the published plugin anytime with `pm-agent install`.
+   ```markdown
+   # PM memory
 
-### Channels
+   - Linear team: <Your Team>
+   - Linear project: <Your Project>
+   - Branch naming: fx-<n>-<slug>, one branch per ticket
+   - Conventions: <priority/label conventions, standing rules>
+   ```
 
-- **local / nightly** — a *directory* marketplace pointing at this working tree.
-  Edit, reload, restart. No commit or publish required.
-- **beta** — a `beta` branch with a prerelease version (e.g. `0.2.0-beta.1`).
-- **stable** — tagged releases on `main`. Cut one with:
-  ```bash
-  claude plugin tag --push        # creates pm--v<version> from plugins/pm/.claude-plugin/plugin.json
-  ```
+   Keep it to facts that stay true regardless of any ticket's state — it's config, not a
+   log. Everything ticket-specific lives in Linear.
 
-## Roadmap
+## Usage
 
-1. ✅ Claude Code plugin (`pm`) — Linear-backed orchestration.
-2. ⏳ Local database + server abstraction so the plugin talks to a pluggable
-   backend (Linear *or* local).
-3. ⏳ Self-hosted web UI to replace Linear.
-4. ⏳ `npx pm-agent` one-command setup (install plugin, start server, open UI).
+### Plan: `/pm:plan`
+
+Opens a dedicated **PM planning session**. This is where you decide *what* to work on and
+*why* — dump ideas, turn rough thoughts into real tickets, sequence them, and promote the
+ready ones to the top of the queue. The PM never writes code here; it's your thinking
+partner and ticket steward.
+
+Use it to start a work session, figure out what's next, line up a milestone, or talk
+through a decision that affects more than one ticket.
+
+### Build: `/pm:start`
+
+Start a **coding session** on a ready ticket. In a fresh session, run `/pm:start` — it
+pulls the top ready ticket (or one you name), creates its branch, and claims it **In
+Progress**. Do this **before writing any feature work**, so every change is tied to a
+ticket and a branch.
+
+### While you're coding
+
+- **`/pm:capture <idea>`** — a bug or out-of-scope idea surfaces mid-task. File it to
+  Linear without derailing what you're doing. Don't silently fix it — capture it.
+- **`/pm:checkpoint <issue>`** — at a commit boundary, have the PM commit the work you've
+  staged with a ticket-linked message and log progress on the issue. Not a closeout.
+- **`/pm:plan`** — you need to diverge from the ticket, hit cross-ticket impact, or face a
+  call that needs buy-in. Route it through the PM instead of deciding alone.
+- **`/pm:done <issue>`** — the work is complete or its acceptance is approved. Hand it back
+  to the PM to reconcile the ticket and close it. Don't self-merge or close issues
+  yourself — the PM owns closeout.
 
 ## License
 
