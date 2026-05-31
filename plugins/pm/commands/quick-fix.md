@@ -44,7 +44,7 @@ your tree. `/pm:quick-fix` is the do-it-now-and-close-it-out path for a small fi
 
 **4. Build the fix.** Implement it to the one-liner's intent, in the worktree. It is meant to
    be small — if it turns out NOT to be (spans unrelated areas, needs a real design call, or
-   touches files an in-flight ticket owns), STOP and run `/pm:plan` rather than letting a
+   touches files an in-flight ticket owns), STOP and run `/pm:start` rather than letting a
    quick-fix sprawl into something that should have been scoped.
 
 **5. Hand it back for validation.** Give the user a concrete way to check the fix — for UI

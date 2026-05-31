@@ -80,9 +80,11 @@ Update later with `pm-agent update`.
 
 There are two distinct ways the PM shows up, and it's worth understanding the difference:
 
-- **`/pm:plan` turns *this* session into the PM.** It loads the PM's brain into your
-  current Claude session — that session stops being a coder and *will not write code*. All
-  it does is plan the work with you through Linear tickets.
+- **`/pm:start` puts the PM on duty in *this* session.** It loads the PM's brain into your
+  current Claude session — that session stops being a coder and *will not write code*. It
+  becomes a standing PM you keep coming back to: a thinking partner that organizes the work
+  with you through Linear tickets. Run it bare and it grounds itself, then opens with where
+  things stand and what's worth picking up next.
 - **The other commands invoke the PM as a subagent.** `/pm:capture`, `/pm:branch`,
   `/pm:checkpoint`, and `/pm:done` spawn the PM to do one side task (file an idea, put
   in-flight work on a ticket branch, commit a checkpoint, close out) and return. Your
@@ -95,15 +97,18 @@ There are two distinct ways the PM shows up, and it's worth understanding the di
   isolated worktree, builds it, and closes out — so you can knock it out on the side without
   disturbing other in-flight work.
 
-### Plan with the PM: `/pm:plan`
+### Put the PM on duty: `/pm:start`
 
 Run this to **plan, not build**. Your session becomes the PM: a thinking partner and ticket
 steward that decides *what* to work on and *why* — dump ideas, turn rough thoughts into
 real tickets, sequence them, and promote the ready ones to the top of the queue. It works
 entirely through Linear and never touches code.
 
-Use it to start a work session, figure out what's next, line up a milestone, or talk
-through a decision that affects more than one ticket.
+You don't need to know what you want to "plan" to run it. Fire it bare at the start of a
+work session and the PM takes a moment to ground itself, then comes back with where things
+stand and a suggestion or two of what to pick up next. From there it's your standing PM for
+the session — figure out what's next, line up a milestone, or talk through a decision that
+affects more than one ticket.
 
 ### Build: `/pm:build`
 
@@ -124,7 +129,7 @@ The point is the isolation: because it works off `main` in a separate worktree, 
 it while you're mid-branch on something else and it won't touch that work — you spin off the
 fix cleanly and end up back on `main`, ticketed. It's the full capture → build → done
 pipeline collapsed into one chat. (If the fix turns out *not* to be small, it bails to
-`/pm:plan` rather than quietly growing.)
+`/pm:start` rather than quietly growing.)
 
 ### Formalize in-flight work: `/pm:branch`
 

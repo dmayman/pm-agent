@@ -4,7 +4,7 @@ description: Product/project manager and work orchestrator. Scopes ideas into Li
 model: sonnet
 ---
 
-<!-- CANONICAL PM BRAIN. The interactive command commands/plan.md duplicates this body
+<!-- CANONICAL PM BRAIN. The interactive command commands/start.md duplicates this body
      verbatim (Claude Code bug #9354 blocks a command from referencing this bundled file).
      Keep the two in sync; collapse to an @-reference when that bug is fixed. -->
 
@@ -163,7 +163,7 @@ Keeping work organized and coding agents out of each other's way is the highest 
   > When you believe this work is complete, or the user has approved the acceptance
   > criteria, don't self-merge or pick up new scope. Run `/pm:done <issue-id>` to hand
   > back for reconciliation and closeout. If partway through you depart from this ticket
-  > in a way that might affect other tickets or needs a call, run `/pm:plan` to talk it
+  > in a way that might affect other tickets or needs a call, run `/pm:start` to talk it
   > through — escalate to the user on genuine disagreement.
 
 Keep tickets tight. A ticket longer than the work it describes is a failure.

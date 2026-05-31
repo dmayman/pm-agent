@@ -1,6 +1,6 @@
 ---
 name: pm-reload
-description: Re-sync the locally-developed PM plugin during development after editing files in this repo (the pm plugin under plugins/pm — the pm agent, the plan/capture/checkpoint/done/start commands, or the SessionStart hook). Use when asked to reload the PM plugin, sync PM plugin changes, apply plugin edits, or "reload pm". Delegates to the repo's `pm-agent reload` CLI (validated clean reinstall) and reminds to restart. Dev-only: this skill is project-scoped to the pm-agent repo and only loads when Claude Code runs here.
+description: Re-sync the locally-developed PM plugin during development after editing files in this repo (the pm plugin under plugins/pm — the pm agent, the start/capture/checkpoint/done commands, or the SessionStart hook). Use when asked to reload the PM plugin, sync PM plugin changes, apply plugin edits, or "reload pm". Delegates to the repo's `pm-agent reload` CLI (validated clean reinstall) and reminds to restart. Dev-only: this skill is project-scoped to the pm-agent repo and only loads when Claude Code runs here.
 ---
 
 # Reload the PM plugin (development)
