@@ -89,8 +89,10 @@ There are two distinct ways the PM shows up, and it's worth understanding the di
   session stays the coding session the whole time — they don't change what you're doing.
   (`/pm:branch` runs the PM in the foreground because it needs the new issue ID before it
   can name the branch; the rest are fire-and-forget.)
-- **`/pm:build` is neither** — it doesn't spawn the PM at all. It just bootstraps your
-  coding session from a ticket the PM already queued.
+- **`/pm:build` and `/pm:quick-fix` start a coding session.** `/pm:build` bootstraps you
+  from a ticket the PM already queued (no subagent). `/pm:quick-fix` is for a one-line idea
+  with no ticket yet — it files one through the PM, sets up the branch, and drops you
+  straight into building.
 
 ### Plan with the PM: `/pm:plan`
 
@@ -108,6 +110,16 @@ Start a **coding session** on a ready ticket. In a fresh session, run `/pm:build
 pulls the top ready ticket (or one you name), creates its branch, and claims it **In
 Progress**. Do this **before writing any feature work**, so every change is tied to a
 ticket and a branch.
+
+### Do it now from a one-liner: `/pm:quick-fix`
+
+For a small, clear fix you want to knock out *right now* instead of filing it and coming
+back later. In a fresh session, run `/pm:quick-fix <the one-line fix>` — it files the ticket
+through the PM, sets up the `fx-<n>-<slug>` branch (or a worktree if the root tree is busy),
+claims it **In Progress**, and then you build it straight away. When it's done, `/pm:done`
+as usual. It's the do-it-now shortcut through capture → build: idea → ticket → branch →
+build in one shot. (If it turns out *not* to be small, it bails out to `/pm:plan` rather
+than quietly growing.)
 
 ### Formalize in-flight work: `/pm:branch`
 
