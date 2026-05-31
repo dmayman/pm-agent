@@ -39,29 +39,21 @@ clobbering one another.
 ## Install
 
 ```bash
-npm install -g @dmayman/pm-agent   # the installed command is `pm-agent`
-pm-agent install                   # points Claude at the installed files + installs the plugin
+npm install -g @dmayman/pm-agent
+pm-agent install
 # restart Claude Code to load it
 ```
-
-npm is the source of truth: `pm-agent install` points Claude Code's marketplace at the
-package npm just put on disk, so you're always running a published release.
 
 **Updating.** A session tells you when a newer release is out; run `/pm:update` (inside
 Claude Code) or `pm-agent update` (in a shell) to fetch it from npm and reinstall, then
 restart Claude Code.
 
-**Without the CLI**, you can install straight from GitHub instead — but this tracks the
-repo directly and won't get npm-based update notices:
-
-```bash
-claude plugin marketplace add dmayman/pm-agent
-claude plugin install pm@pm-agent
-```
-
 ## Connect Linear
 
-1. **Add the Linear MCP** to Claude Code:
+1. **Create a Linear account** if you don't have one — [linear.app](https://linear.app) —
+   and set up the team/project you'll track this work in.
+
+2. **Add the Linear MCP** to Claude Code:
 
    ```bash
    claude mcp add --transport http linear https://mcp.linear.app/mcp
@@ -70,11 +62,11 @@ claude plugin install pm@pm-agent
    (If that transport gives you trouble, the SSE endpoint is
    `https://mcp.linear.app/sse`.)
 
-2. **Authenticate** — open a Claude Code session and run `/mcp`, then complete the Linear
+3. **Authenticate** — open a Claude Code session and run `/mcp`, then complete the Linear
    OAuth login in your browser. No API key needed. See
    [Linear's MCP docs](https://linear.app/docs/mcp).
 
-3. **Tell the PM which Linear team/project this repo maps to.** In the repo where you'll
+4. **Tell the PM which Linear team/project this repo maps to.** In the repo where you'll
    use the plugin, create `.claude/pm-memory.md` — a tiny, evergreen config file the PM
    reads at the start of every session:
 
