@@ -66,21 +66,23 @@ restart Claude Code.
    OAuth login in your browser. No API key needed. See
    [Linear's MCP docs](https://linear.app/docs/mcp).
 
-4. **Tell the PM which Linear team/project this repo maps to.** In the repo where you'll
-   use the plugin, create `.claude/pm-memory.md` — a tiny, evergreen config file the PM
-   reads at the start of every session:
+4. **Pick a team for the repo — `/pm:start` sets this up for you.** The first time you run
+   `/pm:start` in a repo, the PM checks whether a Linear team is configured and, if not,
+   shows your teams and asks which to use (or offers to create one), then writes it to
+   `.claude/pm-memory.md`. One team per repo is the recommended default. It won't start
+   planning until a team is set.
+
+   That file is a tiny, evergreen config — the team is the only thing it needs. You can edit
+   it to override defaults or add standing rules; keep it to facts that stay true regardless
+   of any ticket's state (everything ticket-specific lives in Linear):
 
    ```markdown
    # PM memory
 
-   - Linear team: <Your Team>
-   - Linear project: <Your Project>
+   - Linear team: <Your Team>          # required — what /pm:start fills in
+   - Linear project: <Your Project>    # optional — pin a project, or let the PM choose
    - Branch naming: fx-<n>-<slug>, one branch per ticket
-   - Conventions: <priority/label conventions, standing rules>
    ```
-
-   Keep it to facts that stay true regardless of any ticket's state — it's config, not a
-   log. Everything ticket-specific lives in Linear.
 
 ## Usage
 
