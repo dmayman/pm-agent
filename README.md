@@ -100,8 +100,7 @@ or two of what to pick up next. Use it to figure out what's next, line up a mile
 talk through a decision that spans more than one ticket.
 
 The commands below are the opposite: each is a quick action for a specific kind of task.
-They don't change what your session is — you stay the coder — they just hand a slice of
-work to the PM (or set you up to start one).
+They happen in your coding sessions, and either help the Claude coder get context from the PM or invoke a PM sub-agent for a quick task.
 
 ### Get work done
 
