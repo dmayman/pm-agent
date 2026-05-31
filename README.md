@@ -90,9 +90,10 @@ There are two distinct ways the PM shows up, and it's worth understanding the di
   (`/pm:branch` runs the PM in the foreground because it needs the new issue ID before it
   can name the branch; the rest are fire-and-forget.)
 - **`/pm:build` and `/pm:quick-fix` start a coding session.** `/pm:build` bootstraps you
-  from a ticket the PM already queued (no subagent). `/pm:quick-fix` is for a one-line idea
-  with no ticket yet — it files one through the PM, sets up the branch, and drops you
-  straight into building.
+  from a ticket the PM already queued (no subagent). `/pm:quick-fix` runs the whole pipeline
+  for a small fix in one chat — files a ticket through the PM, branches off `main` in an
+  isolated worktree, builds it, and closes out — so you can knock it out on the side without
+  disturbing other in-flight work.
 
 ### Plan with the PM: `/pm:plan`
 
@@ -111,15 +112,19 @@ pulls the top ready ticket (or one you name), creates its branch, and claims it 
 Progress**. Do this **before writing any feature work**, so every change is tied to a
 ticket and a branch.
 
-### Do it now from a one-liner: `/pm:quick-fix`
+### Do it now, on the side: `/pm:quick-fix`
 
-For a small, clear fix you want to knock out *right now* instead of filing it and coming
-back later. In a fresh session, run `/pm:quick-fix <the one-line fix>` — it files the ticket
-through the PM, sets up the `fx-<n>-<slug>` branch (or a worktree if the root tree is busy),
-claims it **In Progress**, and then you build it straight away. When it's done, `/pm:done`
-as usual. It's the do-it-now shortcut through capture → build: idea → ticket → branch →
-build in one shot. (If it turns out *not* to be small, it bails out to `/pm:plan` rather
-than quietly growing.)
+For a small, self-contained fix you want done *right now* and fully tracked — without
+derailing whatever you're already in the middle of. Run `/pm:quick-fix <the small fix>` and
+it runs the whole pipeline in one session: files the ticket through the PM, branches off
+`main` **in its own worktree**, claims it **In Progress**, builds the fix, hands you a way
+to validate, and on `/pm:done` merges back to `main` and cleans up the worktree.
+
+The point is the isolation: because it works off `main` in a separate worktree, you can fire
+it while you're mid-branch on something else and it won't touch that work — you spin off the
+fix cleanly and end up back on `main`, ticketed. It's the full capture → build → done
+pipeline collapsed into one chat. (If the fix turns out *not* to be small, it bails to
+`/pm:plan` rather than quietly growing.)
 
 ### Formalize in-flight work: `/pm:branch`
 
