@@ -1,32 +1,40 @@
 # pm-agent
 
-A Claude Code plugin that makes **Linear the source of truth for what you work on**.
+**An AI project manager for Claude Code — it keeps your coding sessions organized and stops
+them from tripping over each other.**
 
-It adds a PM agent and a set of `/pm:*` commands. The PM scopes your ideas into Linear
-tickets, grooms and sequences them, and routes your coding sessions so they don't collide.
-Coding sessions claim a ticket up front and stay scoped to it — so you can pick up work
-with zero prep and run several sessions without them tripping over each other.
+The more you build with Claude Code, the more sessions you run — and the easier it is to
+lose the plot: what's in flight, what was decided, what's next. Worse, parallel sessions
+start colliding: two of them editing the same files, work landing on `main`, branches and
+commits piling up in a mess you have to untangle later.
+
+pm-agent adds a **project manager (PM)** to Claude Code: an agent whose only job is to
+decide *what* to work on and keep concurrent work in order. It turns your ideas into
+tickets, grooms and sequences them, and routes each coding session so they don't step on
+each other. You pick up work with zero prep and run several sessions at once without them
+clobbering one another.
+
+## How it works
+
+- **It owns the version-control choreography, so you don't trip over it.** Every unit of
+  work gets its own ticket branch (`fx-<n>-<slug>`). When sessions run in parallel, each
+  gets its own git **worktree** — and its own dev-preview server on its own port — so two
+  sessions never fight over the working tree or collide on a port. Commits are
+  ticket-linked and scoped to what the session actually staged (never a blind `git add
+  -A`), and at closeout the PM merges, deletes the branch, and prunes the worktree. You
+  stay heads-down on code; it keeps the tree clean.
+- **Tickets are the source of truth.** Every idea, decision, status, and closeout lives on
+  a ticket — not in a session's memory — so a handoff is just *"work on FX-123"* and ticket
+  **status** is the work queue (Backlog → Ready → In Progress → Done). The PM uses a ticket
+  management system to stay organized and orchestrate; **Linear** is the app of choice for
+  now (connected over MCP), with others possible down the line. The plugin keeps no state
+  of its own.
 
 ## Requirements
 
 - **Claude Code**
-- **A Linear account** with the **Linear MCP** connected (setup below). Linear is
-  required — the plugin keeps no state of its own.
-
-## Why Linear
-
-The plugin doesn't store your work anywhere itself. **Linear is the system of record**:
-every idea, ticket, decision, status, and closeout lives on a Linear issue or project, and
-the PM agent reads and writes it through the Linear MCP.
-
-That's what makes the whole thing work:
-
-- A handoff to a coding session is just *"work on FX-123"* — the session reads the ticket
-  from Linear and has everything it needs.
-- Ticket **status** is the work queue (Backlog → Ready → In Progress → Done), so you start
-  work without re-explaining it.
-- Because the PM can see what every session owns, it can sequence overlapping work instead
-  of letting two sessions edit the same files at once.
+- **Linear** with the **Linear MCP** connected (setup below) — the PM's ticket backend and
+  system of record for now.
 
 ## Install
 
@@ -84,100 +92,42 @@ claude plugin install pm@pm-agent
 
 ## Usage
 
-There are two distinct ways the PM shows up, and it's worth understanding the difference:
+### Set the context: `/pm:start`
 
-- **`/pm:start` puts the PM on duty in *this* session.** It loads the PM's brain into your
-  current Claude session — that session stops being a coder and *will not write code*. It
-  becomes a standing PM you keep coming back to: a thinking partner that organizes the work
-  with you through Linear tickets. Run it bare and it grounds itself, then opens with where
-  things stand and what's worth picking up next.
-- **The other commands invoke the PM as a subagent.** `/pm:capture`, `/pm:branch`,
-  `/pm:checkpoint`, and `/pm:done` spawn the PM to do one side task (file an idea, put
-  in-flight work on a ticket branch, commit a checkpoint, close out) and return. Your
-  session stays the coding session the whole time — they don't change what you're doing.
-  (`/pm:branch` runs the PM in the foreground because it needs the new issue ID before it
-  can name the branch; the rest are fire-and-forget.)
-- **`/pm:build` and `/pm:quick-fix` start a coding session.** `/pm:build` bootstraps you
-  from a ticket the PM already queued (no subagent). `/pm:quick-fix` runs the whole pipeline
-  for a small fix in one chat — files a ticket through the PM, branches off `main` in an
-  isolated worktree, builds it, and closes out — so you can knock it out on the side without
-  disturbing other in-flight work.
-
-### Put the PM on duty: `/pm:start`
-
-Run this to **plan, not build**. Your session becomes the PM: a thinking partner and ticket
-steward that decides *what* to work on and *why* — dump ideas, turn rough thoughts into
-real tickets, sequence them, and promote the ready ones to the top of the queue. It works
-entirely through Linear and never touches code.
+`/pm:start` is the one command that's different from the rest. It puts the PM **on duty in
+this session** — your Claude session stops being a coder and *will not write code*. It
+becomes a standing project manager you keep coming back to: a thinking partner that decides
+what to work on and why, turns rough ideas into real tickets, sequences them, and keeps the
+board honest.
 
 You don't need to know what you want to "plan" to run it. Fire it bare at the start of a
-work session and the PM takes a moment to ground itself, then comes back with where things
-stand and a suggestion or two of what to pick up next. From there it's your standing PM for
-the session — figure out what's next, line up a milestone, or talk through a decision that
-affects more than one ticket.
+work session and the PM grounds itself, then opens with where things stand and a suggestion
+or two of what to pick up next. Use it to figure out what's next, line up a milestone, or
+talk through a decision that spans more than one ticket.
 
-### Build: `/pm:build`
+The commands below are the opposite: each is a quick action for a specific kind of task.
+They don't change what your session is — you stay the coder — they just hand a slice of
+work to the PM (or set you up to start one).
 
-Start a **coding session** on a ready ticket. In a fresh session, run `/pm:build` — it
-pulls the top ready ticket (or one you name), creates its branch, and claims it **In
-Progress**. Do this **before writing any feature work**, so every change is tied to a
-ticket and a branch.
+### Get work done
 
-### Do it now, on the side: `/pm:quick-fix`
+Pick the command that matches the task in front of you:
 
-For a small, self-contained fix you want done *right now* and fully tracked — without
-derailing whatever you're already in the middle of. Run `/pm:quick-fix <the small fix>` and
-it runs the whole pipeline in one session: files the ticket through the PM, branches off
-`main` **in its own worktree**, claims it **In Progress**, builds the fix, hands you a way
-to validate, and on `/pm:done` merges back to `main` and cleans up the worktree.
-
-The point is the isolation: because it works off `main` in a separate worktree, you can fire
-it while you're mid-branch on something else and it won't touch that work — you spin off the
-fix cleanly and end up back on `main`, ticketed. It's the full capture → build → done
-pipeline collapsed into one chat. (If the fix turns out *not* to be small, it bails to
-`/pm:start` rather than quietly growing.)
-
-### Formalize in-flight work: `/pm:branch`
-
-The missing middle between capture and build: you started coding *before* there was a
-ticket, and now this in-flight work needs to be put on rails. `/pm:branch` files the
-ticket, moves your uncommitted changes onto a proper `fx-<n>-<slug>` branch, and claims it
-**In Progress** — without losing work and without committing. (`/pm:capture` files a ticket
-but never touches your tree; `/pm:build` sets up a branch but assumes a ready ticket already
-exists.) It also handles the messier case where you'd already committed to `main`, rewinding
-the base safely. You stay the coding session and keep going.
-
-### While you're coding
-
-These spawn the PM as a subagent for a quick side task — you stay in your coding session:
-
-- **`/pm:capture <idea>`** — a bug or out-of-scope idea surfaces mid-task. File it to
-  Linear without derailing what you're doing. Don't silently fix it — capture it.
-- **`/pm:checkpoint <issue>`** — at a commit boundary, have the PM commit the work you've
-  staged with a ticket-linked message and log progress on the issue. Not a closeout.
-- **`/pm:done <issue>`** — the work is complete or its acceptance is approved. Hand it back
-  to the PM to reconcile the ticket and close it. Don't self-merge or close issues
-  yourself — the PM owns closeout.
-
-## Development & releasing
-
-For working on the plugin itself (the source lives in `plugins/pm/`). These steps are
-project-scoped — the `/pm-reload` and `/pm-release` skills only load inside this repo.
-
-- **Develop locally.** Point Claude at your working tree once with `pm-agent dev`, then
-  after each edit run `/pm-reload` (or `pm-agent reload`) and restart Claude Code. Claude
-  reads your live files, not a release.
-- **Save work without releasing.** Just `git push`. Pushing to GitHub only saves source —
-  it doesn't change anything for installed users, who only move when a new version is
-  published to npm. So commit and push freely between releases.
-- **Cut a release** when you're ready, with `/pm-release` (or `pm-agent release <level>`).
-  It bumps the version (`patch` / `minor` / `major`), keeps `package.json` and the plugin's
-  `plugin.json` in lockstep, tags `vX.Y.Z`, pushes, and publishes to npm. Users then get it
-  via the update notice → `/pm:update`. Releases publish only already-committed work.
-
-A beta tester who wants the bleeding edge can install straight from a branch without waiting
-for a release: `npm install -g dmayman/pm-agent#main` (or `#<branch>`), then `pm-agent
-install`.
+- **`/pm:build [ticket]`** — Start coding a ready ticket. Pulls the top of the queue (or one
+  you name), sets up its branch, and claims it **In Progress**. Run it before writing any
+  feature work.
+- **`/pm:quick-fix <fix>`** — Knock out a small fix start-to-finish, right now. Files a
+  ticket, branches off `main` in its own worktree, builds it, and closes out — isolated, so
+  it won't disturb whatever else you have in flight.
+- **`/pm:branch`** — You started coding *without* a ticket. Files one, moves your in-flight
+  changes onto a proper branch, and claims it — without losing work or committing.
+- **`/pm:capture <idea>`** — A bug or out-of-scope idea surfaced mid-task. File it for later
+  without derailing what you're doing (don't silently fix it).
+- **`/pm:checkpoint [ticket]`** — At a commit boundary, have the PM commit your staged work
+  with a ticket-linked message and log progress. Not a closeout.
+- **`/pm:done [ticket]`** — The work is finished or approved. Hand it back to the PM to
+  reconcile the ticket, merge, and close out. Don't self-merge — the PM owns closeout.
+- **`/pm:update`** — Update the plugin to the latest release.
 
 ## License
 
