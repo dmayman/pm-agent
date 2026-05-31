@@ -50,39 +50,37 @@ restart Claude Code.
 
 ## Connect Linear
 
-1. **Create a Linear account** if you don't have one — [linear.app](https://linear.app) —
-   and set up the team/project you'll track this work in.
+Create a Linear account at [linear.app](https://linear.app) if you don't have one, then
+connect the Linear MCP to Claude Code:
 
-2. **Add the Linear MCP** to Claude Code:
+```bash
+claude mcp add --transport http linear https://mcp.linear.app/mcp
+```
 
-   ```bash
-   claude mcp add --transport http linear https://mcp.linear.app/mcp
-   ```
+Run `/mcp` in a Claude Code session and finish the OAuth login in your browser — no API key
+needed. (If that transport gives you trouble, use the SSE endpoint
+`https://mcp.linear.app/sse`.) See [Linear's MCP docs](https://linear.app/docs/mcp).
 
-   (If that transport gives you trouble, the SSE endpoint is
-   `https://mcp.linear.app/sse`.)
+## Teach the PM how you work: `.claude/pm-memory.md`
 
-3. **Authenticate** — open a Claude Code session and run `/mcp`, then complete the Linear
-   OAuth login in your browser. No API key needed. See
-   [Linear's MCP docs](https://linear.app/docs/mcp).
+The PM keeps a tiny, per-repo config file at `.claude/pm-memory.md` — the durable facts
+about how you want work run here. **`/pm:start` sets it up for you.** The first time you run
+it in a repo, the PM checks whether a Linear team is configured and, if not, shows your
+teams and asks which to use (or offers to create one), then writes it. One team per repo is
+the recommended default, and the PM won't start planning until a team is set.
 
-4. **Pick a team for the repo — `/pm:start` sets this up for you.** The first time you run
-   `/pm:start` in a repo, the PM checks whether a Linear team is configured and, if not,
-   shows your teams and asks which to use (or offers to create one), then writes it to
-   `.claude/pm-memory.md`. One team per repo is the recommended default. It won't start
-   planning until a team is set.
+The Linear team is the only required field. Everything else is optional — pin a project, set
+branch conventions, record standing rules about how this repo works — and you can edit the
+file directly anytime. Keep it to facts that stay true regardless of any ticket's state
+(it's config, not a log); everything ticket-specific lives in Linear.
 
-   That file is a tiny, evergreen config — the team is the only thing it needs. You can edit
-   it to override defaults or add standing rules; keep it to facts that stay true regardless
-   of any ticket's state (everything ticket-specific lives in Linear):
+```markdown
+# PM memory
 
-   ```markdown
-   # PM memory
-
-   - Linear team: <Your Team>          # required — what /pm:start fills in
-   - Linear project: <Your Project>    # optional — pin a project, or let the PM choose
-   - Branch naming: fx-<n>-<slug>, one branch per ticket
-   ```
+- Linear team: <Your Team>          # required — what /pm:start fills in
+- Linear project: <Your Project>    # optional — pin a project, or let the PM choose
+- Branch naming: fx-<n>-<slug>, one branch per ticket
+```
 
 ## Usage
 
