@@ -32,18 +32,24 @@ That's what makes the whole thing work:
 
 ```bash
 npm install -g @dmayman/pm-agent   # the installed command is `pm-agent`
-pm-agent install                   # register the marketplace + install the pm plugin
+pm-agent install                   # points Claude at the installed files + installs the plugin
 # restart Claude Code to load it
 ```
 
-Or the plain Claude Code path, without the CLI:
+npm is the source of truth: `pm-agent install` points Claude Code's marketplace at the
+package npm just put on disk, so you're always running a published release.
+
+**Updating.** A session tells you when a newer release is out; run `/pm:update` (inside
+Claude Code) or `pm-agent update` (in a shell) to fetch it from npm and reinstall, then
+restart Claude Code.
+
+**Without the CLI**, you can install straight from GitHub instead — but this tracks the
+repo directly and won't get npm-based update notices:
 
 ```bash
 claude plugin marketplace add dmayman/pm-agent
 claude plugin install pm@pm-agent
 ```
-
-Update later with `pm-agent update`.
 
 ## Connect Linear
 
@@ -152,6 +158,26 @@ These spawn the PM as a subagent for a quick side task — you stay in your codi
 - **`/pm:done <issue>`** — the work is complete or its acceptance is approved. Hand it back
   to the PM to reconcile the ticket and close it. Don't self-merge or close issues
   yourself — the PM owns closeout.
+
+## Development & releasing
+
+For working on the plugin itself (the source lives in `plugins/pm/`). These steps are
+project-scoped — the `/pm-reload` and `/pm-release` skills only load inside this repo.
+
+- **Develop locally.** Point Claude at your working tree once with `pm-agent dev`, then
+  after each edit run `/pm-reload` (or `pm-agent reload`) and restart Claude Code. Claude
+  reads your live files, not a release.
+- **Save work without releasing.** Just `git push`. Pushing to GitHub only saves source —
+  it doesn't change anything for installed users, who only move when a new version is
+  published to npm. So commit and push freely between releases.
+- **Cut a release** when you're ready, with `/pm-release` (or `pm-agent release <level>`).
+  It bumps the version (`patch` / `minor` / `major`), keeps `package.json` and the plugin's
+  `plugin.json` in lockstep, tags `vX.Y.Z`, pushes, and publishes to npm. Users then get it
+  via the update notice → `/pm:update`. Releases publish only already-committed work.
+
+A beta tester who wants the bleeding edge can install straight from a branch without waiting
+for a release: `npm install -g dmayman/pm-agent#main` (or `#<branch>`), then `pm-agent
+install`.
 
 ## License
 
