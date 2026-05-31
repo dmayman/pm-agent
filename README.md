@@ -83,10 +83,14 @@ There are two distinct ways the PM shows up, and it's worth understanding the di
 - **`/pm:plan` turns *this* session into the PM.** It loads the PM's brain into your
   current Claude session — that session stops being a coder and *will not write code*. All
   it does is plan the work with you through Linear tickets.
-- **The other commands invoke the PM as a background agent.** `/pm:capture`,
-  `/pm:checkpoint`, and `/pm:done` spawn the PM as a subagent to do one side task (file an
-  idea, commit a checkpoint, close out) and return. Your session stays the coding session
-  the whole time — they don't interrupt your workflow or change what you're doing.
+- **The other commands invoke the PM as a subagent.** `/pm:capture`, `/pm:branch`,
+  `/pm:checkpoint`, and `/pm:done` spawn the PM to do one side task (file an idea, put
+  in-flight work on a ticket branch, commit a checkpoint, close out) and return. Your
+  session stays the coding session the whole time — they don't change what you're doing.
+  (`/pm:branch` runs the PM in the foreground because it needs the new issue ID before it
+  can name the branch; the rest are fire-and-forget.)
+- **`/pm:build` is neither** — it doesn't spawn the PM at all. It just bootstraps your
+  coding session from a ticket the PM already queued.
 
 ### Plan with the PM: `/pm:plan`
 
