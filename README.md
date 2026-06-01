@@ -61,44 +61,23 @@ Run `/mcp` in a Claude Code session and finish the OAuth login in your browser �
 needed. (If that transport gives you trouble, use the SSE endpoint
 `https://mcp.linear.app/sse`.) See [Linear's MCP docs](https://linear.app/docs/mcp).
 
-## Teach the PM how you work: `.claude/pm-memory.md`
-
-The PM keeps a tiny, per-repo config file at `.claude/pm-memory.md` — the durable facts
-about how you want work run here. **`/pm:start` sets it up for you.** The first time you run
-it in a repo, the PM checks whether a Linear team is configured and, if not, shows your
-teams and asks which to use (or offers to create one), then writes it. One team per repo is
-the recommended default, and the PM won't start planning until a team is set.
-
-The Linear team is the only required field. Everything else is optional — pin a project, set
-branch conventions, record standing rules about how this repo works — and you can edit the
-file directly anytime. Keep it to facts that stay true regardless of any ticket's state
-(it's config, not a log); everything ticket-specific lives in Linear.
-
-```markdown
-# PM memory
-
-- Linear team: <Your Team>          # required — what /pm:start fills in
-- Linear project: <Your Project>    # optional — pin a project, or let the PM choose
-- Branch naming: fx-<n>-<slug>, one branch per ticket
-```
 
 ## Usage
 
 ### Set the context: `/pm:start`
 
-`/pm:start` is the one command that's different from the rest. It puts the PM **on duty in
+`/pm:start` is how you talk directly to your PM. It puts the PM **on duty in
 this session** — your Claude session stops being a coder and *will not write code*. It
 becomes a standing project manager you keep coming back to: a thinking partner that decides
 what to work on and why, turns rough ideas into real tickets, sequences them, and keeps the
-board honest.
+board honest. Start a different concurrent session for your coding work.
 
-You don't need to know what you want to "plan" to run it. Fire it bare at the start of a
-work session and the PM grounds itself, then opens with where things stand and a suggestion
+Run the command and the PM grounds itself, then opens with where things stand and a suggestion
 or two of what to pick up next. Use it to figure out what's next, line up a milestone, or
 talk through a decision that spans more than one ticket.
 
-The commands below are the opposite: each is a quick action for a specific kind of task.
-They happen in your coding sessions, and either help the Claude coder get context from the PM or invoke a PM sub-agent for a quick task.
+The commands below are used during coding sessions. Each is a quick action for a specific kind of task, 
+and either help the Claude coder get context from the PM or invoke a PM sub-agent for a quick task.
 
 ### Get work done
 
@@ -107,9 +86,6 @@ Pick the command that matches the task in front of you:
 - **`/pm:build [ticket]`** — Start coding a ready ticket. Pulls the top of the queue (or one
   you name), sets up its branch, and claims it **In Progress**. Run it before writing any
   feature work.
-- **`/pm:quick-fix <fix>`** — Knock out a small fix start-to-finish, right now. Files a
-  ticket, branches off `main` in its own worktree, builds it, and closes out — isolated, so
-  it won't disturb whatever else you have in flight.
 - **`/pm:branch`** — You started coding *without* a ticket. Files one, moves your in-flight
   changes onto a proper branch, and claims it — without losing work or committing.
 - **`/pm:capture <idea>`** — A bug or out-of-scope idea surfaced mid-task. File it for later
@@ -118,7 +94,20 @@ Pick the command that matches the task in front of you:
   with a ticket-linked message and log progress. Not a closeout.
 - **`/pm:done [ticket]`** — The work is finished or approved. Hand it back to the PM to
   reconcile the ticket, merge, and close out. Don't self-merge — the PM owns closeout.
+- **`/pm:quick-fix <fix>`** — Knock out a small fix start-to-finish, right now. Files a
+  ticket, branches off `main` in its own worktree, builds it, and closes out — isolated, so
+  it won't disturb whatever else you have in flight.
 - **`/pm:update`** — Update the plugin to the latest release.
+
+## The PM learns how you work
+
+The PM keeps a tiny, per-repo config file at `.claude/pm-memory.md` — the durable facts
+about how you want work run here. When you run **`/pm:start` for the first time, it sets it up for you.**
+One team per repo is the recommended default, but if you have a different configuration, just tell it.
+
+The PM will remember anything evergreen about how you work: pin a project, set
+branch conventions, record standing rules about how this repo works. It'll stick to facts that stay true regardless of any ticket's state
+(it's config, not a log); everything ticket-specific lives in Linear.
 
 ## License
 
