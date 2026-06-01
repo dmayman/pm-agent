@@ -99,6 +99,13 @@ Pick the command that matches the task in front of you:
   it won't disturb whatever else you have in flight.
 - **`/pm:update`** — Update the plugin to the latest release.
 
+### Tend the board in Linear
+
+It's worth opening Linear now and then to review the tickets you've created there. Set
+priorities, add labels, group work into projects — by hand or by asking your PM to do it.
+The more you express what you're actually trying to get done, the better the PM can groom,
+sequence, and route it, and the cleaner the whole workflow runs.
+
 ## The PM learns how you work
 
 The PM keeps a tiny, per-repo config file at `.claude/pm-memory.md` — the durable facts
