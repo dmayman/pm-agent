@@ -48,6 +48,13 @@ pm-agent install
 Claude Code) or `pm-agent update` (in a shell) to fetch it from npm and reinstall, then
 restart Claude Code.
 
+**Per-repo, even though it's installed globally.** Installing PM doesn't put it on duty
+everywhere. In a repo with no `.claude/pm-memory.md`, PM stays silent — it injects no
+context and changes no behavior. Running `/pm:start` in a repo creates that file and opts
+the repo in; from then on PM is active there. (The `/pm:*` commands are always available so
+you can onboard any repo, but cost nothing until invoked.) To remove PM from a specific
+repo entirely, run `claude plugin disable pm --scope project`.
+
 ## Connect Linear
 
 Create a Linear account at [linear.app](https://linear.app) if you don't have one, then
