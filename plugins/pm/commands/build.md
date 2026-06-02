@@ -28,7 +28,8 @@ spec; pull it into your context now so you don't round-trip back to Linear mid-b
    - **File overlap** — another in-flight issue edits the same files this ticket will touch.
      A worktree does **not** make this safe (you'd just merge-conflict at the end). If you
      see genuine file overlap, STOP and flag it — tell me to confirm with the PM
-     (`/pm:start`) before proceeding. Overlapping tickets serialize even in separate worktrees.
+     (`/pm:start` in a separate, concurrent session — not this one) before proceeding.
+     Overlapping tickets serialize even in separate worktrees.
 2. **Set up the branch — in the root tree if it's free, otherwise in a dedicated worktree.**
    **One branch per ticket**, named `fx-<n>-<slug>` (no owner/handle prefix) — ignore Linear's
    auto-suggested `gitBranchName`, which prefixes the creator handle. Decide where it lives:
@@ -48,13 +49,20 @@ spec; pull it into your context now so you don't round-trip back to Linear mid-b
    that it's taken. This is a mechanical claim, not grooming — leave scope and grooming to
    the PM; just flip the status.
 
-If the ticket isn't actually ready (missing scope/acceptance, or it's still in Backlog),
-don't paper over it — say so and suggest I run `/pm:start` to groom and queue it first.
+If the ticket isn't actually *groomed* — missing scope/acceptance, can't be built from the
+ticket alone — don't paper over it: say so and suggest I run `/pm:start` in a separate,
+concurrent session (not this one) to groom it first.
+Status alone is not that gap: a groomed ticket merely sitting in Backlog is fine to take —
+invoking `/pm:build` on it *is* the signal to pull it into the queue, so just promote it to
+the ready state and claim it (step 3), don't flag it back to me as a process gap.
 
 **Then build** to the ticket's scope and acceptance, respecting its constraints & gotchas.
-If you find yourself departing from the ticket in a way that affects other work or needs a
-call, run `/pm:start` to talk it through rather than quietly expanding scope. At a natural
-commit boundary, run `/pm:checkpoint <issue-id>`. When the work is complete or I've approved
-the acceptance, run `/pm:done <issue-id>`.
+The ticket is your whole unit of work: don't pick up adjacent untracked work you happen to
+notice while building, even if it looks quick. If something needs doing, `/pm:capture` it so
+it enters the queue — don't quietly fold it into this session. If you find yourself departing
+from the ticket in a way that affects other work or needs a call, run `/pm:start` in a
+separate, concurrent session (not this one) to talk it through rather than expanding scope. At a natural commit boundary, run
+`/pm:checkpoint <issue-id>`. When the work is complete or I've approved the acceptance, run
+`/pm:done <issue-id>`.
 
 Arguments: $ARGUMENTS
