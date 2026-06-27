@@ -1,5 +1,5 @@
 ---
-description: Drop an idea/issue to the PM (as a subagent) to file in Linear with the right placement and priority — without changing this session's role
+description: Drop an idea/issue to the PM (as a subagent) to file in GitHub with the right placement and priority — without changing this session's role
 argument-hint: "<the idea or problem that just came up>"
 ---
 
@@ -18,14 +18,14 @@ re-deriving:
 - Why it came up now, and whether it blocks current work or is just adjacent.
 - Relevant files/modules/devices you'd point a future coding session at (real paths).
 
-Tell the subagent to operate in capture mode and stay lean: read the cached Linear mapping
-from `.claude/pm-memory.md` instead of sweeping the board, do a single targeted duplicate
-search (not a full board read), then create or update the ticket in the right team/project
-with a sensible priority and labels, sequenced against what's in flight. It runs
-non-interactively and can't ask follow-ups mid-run, so it should file with sensible
-defaults and then report back: the issue ID, where it placed it and why, any assumptions
-it made (especially priority), and anything the user should confirm or any suspected
-duplicate. Relay that back to me verbatim-enough to act on; don't groom or expand it
-yourself.
+Tell the subagent to operate in capture mode and stay lean: read the cached GitHub repo
+mapping from `.claude/pm-memory.md` instead of sweeping the board, do a single targeted
+duplicate search (`gh issue list --search`, not a full board read), then create or update
+the issue in the right repo/milestone with a sensible priority and labels, sequenced
+against what's in flight. It runs non-interactively and can't ask follow-ups mid-run, so it
+should file with sensible defaults and then report back: the issue number, where it placed
+it and why, any assumptions it made (especially priority), and anything the user should
+confirm or any suspected duplicate. Relay that back to me verbatim-enough to act on; don't
+groom or expand it yourself.
 
 Idea: $ARGUMENTS

@@ -1,7 +1,7 @@
 {
   "name": "pm",
   "version": "0.3.1",
-  "description": "Product/project manager and work orchestrator. Capture ideas, checkpoint progress, and close out work in Linear, plus a dedicated planning session. Routes coding sessions to avoid collisions. Never writes or executes code.",
+  "description": "Product/project manager and work orchestrator. Capture ideas, checkpoint progress, and close out work in GitHub Issues, plus a dedicated planning session. Routes coding sessions to avoid collisions. Never writes or executes code.",
   "author": {
     "name": "David Mayman"
   }

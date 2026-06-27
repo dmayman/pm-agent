@@ -5,6 +5,16 @@ All notable changes to this project are documented here. Versions follow
 
 ## [Unreleased]
 
+### Changed
+- **Switched the system of record from Linear to GitHub Issues.** The PM now drives issues
+  through the `gh` CLI instead of the Linear MCP — no MCP server or OAuth setup; just
+  `gh auth login`. The work queue moved from Linear workflow states to `status:*` labels
+  (`status:backlog` → `status:ready` → `status:in-progress` → closed), priority to
+  `priority:*` labels, Linear projects to GitHub milestones, and closeout from a local
+  branch merge to a pull request that `Closes #<n>`. Issue branches are now
+  `issue-<n>-<slug>`. The per-repo gate maps the repo to a GitHub `owner/repo` rather than a
+  Linear team.
+
 ## [0.1.0] — 2026-05-29
 
 ### Added

@@ -1,7 +1,7 @@
 {
   "name": "@dmayman/pm-agent",
   "version": "0.3.1",
-  "description": "A Claude Code plugin that makes Linear your source of truth: a PM agent and /pm:* commands that scope ideas into tickets, sequence work, and keep coding sessions from colliding.",
+  "description": "A Claude Code plugin that makes GitHub Issues your source of truth: a PM agent and /pm:* commands that scope ideas into issues, sequence work, and keep coding sessions from colliding.",
   "type": "module",
   "publishConfig": {
     "access": "public"
@@ -26,7 +26,8 @@
     "claude-plugin",
     "project-management",
     "pm",
-    "linear",
+    "github",
+    "github-issues",
     "agent"
   ],
   "author": "David Mayman",
