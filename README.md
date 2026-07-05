@@ -1,129 +1,114 @@
 # pm-agent
 
-**An AI project manager for Claude Code — it keeps your coding sessions organized and stops
-them from tripping over each other.**
+**A work ledger for Claude Code — Claude quietly records what you're building, and you open
+a calm timeline to see where everything stands.**
 
-The more you build with Claude Code, the more sessions you run — and the easier it is to
-lose the plot: what's in flight, what was decided, what's next. Worse, parallel sessions
-start colliding: two of them editing the same files, work landing on `main`, branches and
-commits piling up in a mess you have to untangle later.
+The more you build with Claude Code, the more you lose the plot: what's in flight, what got
+finished when, what loose threads are still dangling. A single line of work sprawls across a
+day or two — an architecture chat, an issue, a branch, a build, a review, a pile of
+followups — and by the time you're deep in followups you've forgotten what the original
+decision even was. GitHub issues hold the facts, but they're verbose and hard to parse, and
+being forced to file a new ticket for every small thing is too rigid to live with.
 
-pm-agent adds a **project manager (PM)** to Claude Code: an agent whose only job is to
-decide *what* to work on and keep concurrent work in order. It turns your ideas into
-issues, grooms and sequences them, and routes each coding session so they don't step on
-each other. You pick up work with zero prep and run several sessions at once without them
-clobbering one another.
+pm-agent gives Claude a **ledger to report into**. As you work, Claude silently records the
+decisions, milestones, and loose ends of each line of work into a timeline — and you open an
+**operator UI** whenever you want a refreshing, at-a-glance read of what's going on. It never
+gates your work, never makes you file anything, and never asks you to manage it. You just get
+clarity when you want it.
+
+> This is an evolution of pm-agent's earlier, ticket-gated PM. That model turned out too
+> rigid — everything, however small, had to go through the issue pipeline. The ledger is the
+> opposite: it **observes** instead of **prescribes**. See [`docs/ledger.md`](docs/ledger.md)
+> for the design.
 
 ## How it works
 
-- **It owns the version-control choreography, so you don't trip over it.** Every unit of
-  work gets its own issue branch (`issue-<n>-<slug>`). When sessions run in parallel, each
-  gets its own git **worktree** — and its own dev-preview server on its own port — so two
-  sessions never fight over the working tree or collide on a port. Commits are
-  issue-linked and scoped to what the session actually staged (never a blind `git add
-  -A`), and at closeout the PM opens a pull request that `Closes #<n>`, merges it, deletes
-  the branch, and prunes the worktree. You stay heads-down on code; it keeps the tree clean.
-- **Issues are the source of truth.** Every idea, decision, status, and closeout lives on
-  a GitHub issue — not in a session's memory — so a handoff is just *"work on #123"* and a
-  `status:*` label is the work queue (`status:backlog` → `status:ready` →
-  `status:in-progress` → closed). The PM drives **GitHub Issues** through the **`gh` CLI**;
-  the plugin keeps no state of its own.
+- **The unit is a _thread_, not a ticket.** A thread is one whole arc of work: its founding
+  decisions (its *genesis*), a stream of events over hours or days, its current status, and
+  its loose ends. Issues, PRs, and commits are artifacts a thread *references* — a followup
+  is just another event on the same thread, no new ticket required. Claude names and
+  organizes threads on its own.
+- **Claude owns it silently.** You're never asked to log anything or tend a board. Claude
+  records what matters as it works; you only ever *read* the result.
+- **It spans all your worktrees.** The ledger is one store per repo, global on your machine
+  (`~/.pm-agent/pm.db`) — so two sessions building two issues in two worktrees land on one
+  shared timeline instead of each seeing half the picture.
+- **It's cheap.** Most of the timeline is derived for free from `git` and `gh`; the rest is
+  distilled by **Haiku**. Claude only contributes what git can't see — decisions, loose ends,
+  and where one thread ends and the next begins.
+- **It calls issues by name.** A `#-glossary` means Claude says *"the token-refresh work
+  (#53)"*, not a bare `#53` you don't recognize.
+
+### Views
+
+Run `pm-agent serve` and open the operator UI:
+
+- **Timeline** — every event, reverse-chronological, grouped by day. Digestible at a glance.
+- **In flight** — the active threads as cards (genesis, recent events, status) plus every
+  open loose end in one place.
+- **Thread** — click any thread to see its founding decisions pinned above its own timeline —
+  the "what was the original plan?" view.
+
+Prefer the terminal? `pm-agent timeline`, `pm-agent inflight`, and `pm-agent loose` render the
+same data.
+
+## Capture: automatic or deliberate
+
+Two modes, one toggle — flip freely to find what fits:
+
+- **`observer`** (default) — a Stop hook runs a cheap Haiku pass at the end of each turn that
+  distills what happened into events. Zero effort; occasionally chatty.
+- **`explicit`** — Claude logs only when it judges something worth recording. Quieter; relies
+  on Claude's judgment.
+
+```bash
+pm-agent config capture explicit   # or: observer
+```
 
 ## Requirements
 
 - **Claude Code**
-- **The GitHub CLI (`gh`)**, installed and authenticated (`gh auth login`) — the PM's
-  issue backend and system of record. A GitHub repo to file issues against (by default the
-  one your working directory points at).
+- **Node ≥ 22.5** (the ledger uses the built-in `node:sqlite` — no native build, no deps)
+- **The GitHub CLI (`gh`)** — *optional*. When present and authenticated it powers the
+  `#-glossary` and records merged-PR milestones. Everything else works without it.
 
 ## Install
 
 ```bash
 npm install -g @dmayman/pm-agent
 pm-agent install
-# restart Claude Code to load it
+# restart Claude Code to load the plugin
 ```
 
 **Updating.** A session tells you when a newer release is out; run `/pm:update` (inside
-Claude Code) or `pm-agent update` (in a shell) to fetch it from npm and reinstall, then
-restart Claude Code.
+Claude Code) or `pm-agent update` (in a shell), then restart Claude Code.
 
-**Per-repo, even though it's installed globally.** Installing PM doesn't put it on duty
-everywhere. In a repo with no `.claude/pm-memory.md`, PM stays silent — it injects no
-context and changes no behavior. Running `/pm:start` in a repo creates that file and opts
-the repo in; from then on PM is active there. (The `/pm:*` commands are always available so
-you can onboard any repo, but cost nothing until invoked.) To remove PM from a specific
-repo entirely, run `claude plugin disable pm --scope project`.
+## Enable it in a repo
 
-## Connect GitHub
-
-Install the [GitHub CLI](https://cli.github.com/) and authenticate it once:
+Installing the plugin doesn't switch it on everywhere. A repo stays silent until you opt it
+in — the hooks do nothing without the `.claude/pm-ledger.md` marker:
 
 ```bash
-gh auth login
+cd your/repo
+pm-agent enable            # or: pm-agent enable --explicit
+# restart Claude Code so the session hooks pick it up
 ```
 
-That's the whole setup — no MCP server, no OAuth dance inside Claude. The PM runs `gh
-issue …` / `gh pr …` directly. The first time you run `/pm:start` in a repo, the PM
-confirms `gh` is authenticated, picks the GitHub repo to file against (defaulting to the
-one your checkout points at), and creates the `status:*` / `priority:*` labels it uses as
-the work queue.
+That sets the capture mode, syncs the issue glossary (if `gh` is available), and writes the
+marker. To opt back out, `pm-agent disable` (your timeline data is kept). To remove the plugin
+from a repo entirely, `claude plugin disable pm --scope project`.
 
-## Usage
+## See where things stand
 
-### Set the context: `/pm:start`
+```bash
+pm-agent serve             # open the operator UI at http://localhost:4477
+pm-agent timeline          # or read it in the terminal (--days N, --thread REF)
+pm-agent inflight
+pm-agent loose
+```
 
-`/pm:start` is how you talk directly to your PM. It puts the PM **on duty in
-this session** — your Claude session stops being a coder and *will not write code*. It
-becomes a standing project manager you keep coming back to: a thinking partner that decides
-what to work on and why, turns rough ideas into real issues, sequences them, and keeps the
-board honest. Start a different concurrent session for your coding work.
-
-Run the command and the PM grounds itself, then opens with where things stand and a suggestion
-or two of what to pick up next. Use it to figure out what's next, line up a milestone, or
-talk through a decision that spans more than one issue.
-
-The commands below are used during coding sessions. Each is a quick action for a specific kind of task, 
-and either help the Claude coder get context from the PM or invoke a PM sub-agent for a quick task.
-
-### Get work done
-
-Pick the command that matches the task in front of you:
-
-- **`/pm:build [issue]`** — Start coding a ready issue. Pulls the top of the queue (or one
-  you name), sets up its branch, and claims it (`status:in-progress`). Run it before writing
-  any feature work.
-- **`/pm:branch`** — You started coding *without* an issue. Files one, moves your in-flight
-  changes onto a proper branch, and claims it — without losing work or committing.
-- **`/pm:capture <idea>`** — A bug or out-of-scope idea surfaced mid-task. File it for later
-  without derailing what you're doing (don't silently fix it).
-- **`/pm:checkpoint [issue]`** — At a commit boundary, have the PM commit your staged work
-  with an issue-linked message and log progress. Not a closeout.
-- **`/pm:done [issue]`** — The work is finished or approved. Hand it back to the PM to
-  reconcile the issue, open the PR, merge, and close out. Don't self-merge — the PM owns
-  closeout.
-- **`/pm:quick-fix <fix>`** — Knock out a small fix start-to-finish, right now. Files an
-  issue, branches off `main` in its own worktree, builds it, and closes out — isolated, so
-  it won't disturb whatever else you have in flight.
-- **`/pm:update`** — Update the plugin to the latest release.
-
-### Tend the board on GitHub
-
-It's worth opening GitHub now and then to review the issues you've created there. Set
-priorities, add labels, group work into milestones — by hand or by asking your PM to do it.
-The more you express what you're actually trying to get done, the better the PM can groom,
-sequence, and route it, and the cleaner the whole workflow runs.
-
-## The PM learns how you work
-
-The PM keeps a tiny, per-repo config file at `.claude/pm-memory.md` — the durable facts
-about how you want work run here. When you run **`/pm:start` for the first time, it sets it up for you.**
-One repo per checkout is the recommended default, but if you have a different configuration
-(say, issues filed against a separate planning repo), just tell it.
-
-The PM will remember anything evergreen about how you work: pin a milestone, set
-branch conventions, record standing rules about how this repo works. It'll stick to facts that stay true regardless of any issue's state
-(it's config, not a log); everything issue-specific lives in GitHub.
+The UI is read-only — it's for looking, not managing. Claude keeps it current; you just open
+it when you want the picture.
 
 ## License
 

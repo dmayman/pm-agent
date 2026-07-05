@@ -12,6 +12,7 @@ build/
 *.sqlite3
 *.db
 apps/server/data/
+.claude/pm-ledger.md
 .env
 .env.*
 !.env.example

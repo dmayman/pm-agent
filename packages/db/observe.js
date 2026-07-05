@@ -1,0 +1,198 @@
+// Observer capture — the automatic, hands-off mode. A Stop hook invokes `pm-agent
+// observe` with the Claude Code Stop payload on stdin. We read ONLY the transcript slice
+// added since a per-session cursor (keeps tokens tiny), then spawn a DETACHED Haiku
+// worker to distill it into ledger events, so the user's turn ends with zero added
+// latency. No-ops unless capture=observer — that's how the toggle works at the hook level.
+
+import { spawn, execFileSync } from "node:child_process";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import * as S from "./store.js";
+
+const HAIKU = "claude-haiku-4-5";
+const MIN_DIGEST_CHARS = 200; // below this there's nothing worth distilling
+const MAX_DIGEST_CHARS = 8000; // keep Haiku's input cheap; take the tail if larger
+
+function readStdin() {
+  try {
+    return readFileSync(0, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+// Turn a transcript JSONL slice into a compact text digest: user prompts, Claude's text,
+// and the names of actions it took. Tool-result payloads are dropped — they're huge and
+// the summary lives in Claude's own words anyway.
+function digestLines(lines) {
+  const out = [];
+  for (const line of lines) {
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const msg = obj.message || obj;
+    const role = msg.role || obj.type;
+    const content = msg.content;
+    if (typeof content === "string") {
+      if (content.trim()) out.push(`${role === "user" ? "USER" : "CLAUDE"}: ${content.trim()}`);
+      continue;
+    }
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block.type === "text" && block.text && block.text.trim()) {
+        out.push(`${role === "user" ? "USER" : "CLAUDE"}: ${block.text.trim().slice(0, 800)}`);
+      } else if (block.type === "tool_use") {
+        const target =
+          block.input?.file_path || block.input?.command || block.input?.path || "";
+        out.push(`ACTION: ${block.name}${target ? " " + String(target).slice(0, 120) : ""}`);
+      }
+    }
+  }
+  let text = out.join("\n");
+  if (text.length > MAX_DIGEST_CHARS) text = text.slice(-MAX_DIGEST_CHARS);
+  return text;
+}
+
+function buildPrompt(digest, threadTitles) {
+  const known = threadTitles.length
+    ? `\n\nExisting threads you should reuse when the work fits one (match by title, don't duplicate):\n- ${threadTitles.join("\n- ")}`
+    : "";
+  return `You maintain a developer's work ledger. Below is an excerpt from a Claude Code coding session. Extract ONLY the meaningful, timeline-worthy events — decisions made, build/test/review milestones reached, followups taken on, and loose ends explicitly deferred. Skip routine chatter, tool mechanics, and anything trivial. Most excerpts yield 0-3 events; returning an empty array is correct and expected when nothing notable happened.
+
+For each event output an object:
+  "type": one of decided|built|tested|reviewed|followup|deferred|merged|blocked|note
+  "summary": one crisp past-tense line a busy developer would want on their timeline
+  "thread": the title of the arc of work this belongs to (reuse an existing one when it fits, or a short new title)
+  "refs": optional object with any of {"issue":<n>,"pr":<n>,"branch":"<s>","commit":"<sha>"}
+
+Use "deferred" ONLY for things explicitly punted to later — those become tracked loose ends.${known}
+
+Respond with ONLY a JSON array (no prose, no code fence). Excerpt:
+---
+${digest}`;
+}
+
+function extractJsonArray(text) {
+  if (!text) return [];
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start === -1 || end === -1 || end < start) return [];
+  try {
+    const arr = JSON.parse(text.slice(start, end + 1));
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+// Entry point invoked by the Stop hook (payload on stdin). Fast + non-blocking.
+export function observe(cwd = process.cwd()) {
+  // Loop guard: the worker's own `claude -p` is a fresh session in this repo, whose Stop
+  // hook would re-enter here. We tag that subprocess so it no-ops instead of fork-bombing.
+  if (process.env.PM_AGENT_OBSERVING) return;
+  const raw = readStdin();
+  let payload = {};
+  try {
+    payload = JSON.parse(raw);
+  } catch {}
+  const transcriptPath = payload.transcript_path;
+  const sessionId = payload.session_id || "unknown";
+  if (!transcriptPath) return;
+
+  const db = S.openDb();
+  const repo = S.getRepo(db, cwd);
+  if (!repo) return;
+  if (S.effectiveConfig(db, repo.slug, "capture", "observer") !== "observer") return; // toggle
+
+  let content;
+  try {
+    content = readFileSync(transcriptPath, "utf8");
+  } catch {
+    return;
+  }
+  const allLines = content.split("\n").filter(Boolean);
+  const cursorKey = `cursor:${sessionId}`;
+  const cursor = Number(S.getConfig(db, "global", cursorKey, "0")) || 0;
+  const fresh = allLines.slice(cursor);
+  // Advance the cursor now, so a slow/failed worker never causes reprocessing next turn.
+  S.setConfig(db, "global", cursorKey, String(allLines.length));
+  if (!fresh.length) return;
+
+  const digest = digestLines(fresh);
+  if (digest.length < MIN_DIGEST_CHARS) return;
+
+  const threadTitles = S.listThreads(db, repo.id)
+    .filter((t) => t.status !== "done")
+    .map((t) => t.title)
+    .slice(0, 20);
+
+  // Hand the heavy Haiku call to a detached worker and return immediately.
+  const jobDir = path.join(S.pmHome(), "jobs");
+  mkdirSync(jobDir, { recursive: true });
+  const jobFile = path.join(jobDir, `${sessionId}-${allLines.length}.json`);
+  writeFileSync(
+    jobFile,
+    JSON.stringify({ repoSlug: repo.slug, root: repo.root, prompt: buildPrompt(digest, threadTitles) })
+  );
+
+  const self = fileURLToPath(new URL("../../bin/pm-agent.js", import.meta.url));
+  const child = spawn(process.execPath, [self, "observe", "--worker", jobFile], {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+}
+
+// The detached worker: call Haiku, write the events it distilled, clean up.
+export function observeWorker(jobFile) {
+  let job;
+  try {
+    job = JSON.parse(readFileSync(jobFile, "utf8"));
+  } catch {
+    return;
+  }
+  let output = "";
+  try {
+    output = execFileSync("claude", ["-p", job.prompt, "--model", HAIKU], {
+      cwd: job.root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 60000,
+      maxBuffer: 4 * 1024 * 1024,
+      // Mark this sub-session so its own Stop hook won't re-trigger the observer.
+      env: { ...process.env, PM_AGENT_OBSERVING: "1" },
+    });
+  } catch {
+    cleanup(jobFile);
+    return;
+  }
+  const events = extractJsonArray(output);
+  if (events.length) {
+    const db = S.openDb();
+    const repo = db.prepare("SELECT * FROM repos WHERE slug = ?").get(job.repoSlug);
+    if (repo) {
+      for (const e of events) {
+        if (!e || !e.type || !e.summary) continue;
+        const threadId = e.thread ? S.resolveThread(db, repo.id, String(e.thread)) : null;
+        S.logEvent(db, repo.id, {
+          threadId,
+          type: S.normalizeType(e.type),
+          summary: String(e.summary),
+          refs: e.refs && typeof e.refs === "object" ? e.refs : null,
+          source: "observer",
+        });
+      }
+    }
+  }
+  cleanup(jobFile);
+}
+
+function cleanup(f) {
+  try {
+    unlinkSync(f);
+  } catch {}
+}

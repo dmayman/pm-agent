@@ -43,6 +43,18 @@ LOCAL-DEV COMMANDS
   release <level>    Cut a release: bump (patch|minor|major), tag, push, publish
                        to npm. Run from the repo (or pass its path).
 
+LEDGER COMMANDS (the observational timeline — see docs/ledger.md)
+  enable             Opt this repo into the ledger (--explicit for manual capture)
+  disable            Opt this repo out (keeps the timeline data)
+  timeline           Show the activity timeline (--days N, --thread REF, --json)
+  inflight           Active threads, recent events, and loose ends
+  loose              Open loose ends (loose resolve <id> to close one)
+  log <summary...>   Record an event (--type, --thread, --issue, --commit …)
+  thread             list | new <title> | set <id> (--status, --genesis …)
+  issue-title <n> …  Set the #-glossary title for an issue
+  config [key] [val] capture=observer|explicit, etc.
+  serve              Serve the operator UI (--port)
+
 MISC
   check-update       Print a one-line notice if a newer release is on npm
                        (throttled; used by the SessionStart hook)
@@ -334,6 +346,24 @@ switch (cmd) {
   case "validate":
     cmdValidate(arg);
     break;
+  case "enable":
+  case "disable":
+  case "log":
+  case "thread":
+  case "timeline":
+  case "inflight":
+  case "loose":
+  case "issue-title":
+  case "config":
+  case "context":
+  case "observe":
+  case "ingest":
+  case "serve": {
+    // Lazily load the ledger (pulls in node:sqlite) so install/update stay dependency-light.
+    const { runLedger } = await import("../packages/db/cli.js");
+    await runLedger(cmd, argv.slice(1));
+    break;
+  }
   case "--version":
   case "-v":
     cmdVersion();

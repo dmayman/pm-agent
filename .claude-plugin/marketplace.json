@@ -2,13 +2,13 @@
   "name": "pm-agent",
   "owner": { "name": "David Mayman" },
   "metadata": {
-    "description": "A Claude Code plugin (pm): a PM agent and /pm:* commands that scope work into GitHub issues, sequence it, and route coding sessions to avoid collisions."
+    "description": "An observational work ledger for Claude Code: a silent timeline of what's planned, in progress, and finished across all your worktrees, with an operator UI you open for instant clarity."
   },
   "plugins": [
     {
       "name": "pm",
       "source": "./plugins/pm",
-      "description": "PM agent + commands: capture ideas, checkpoint progress, close out work in GitHub Issues, and run dedicated planning sessions. Never writes or executes code."
+      "description": "Claude silently records decisions, milestones, and loose ends into a global per-repo timeline (SessionStart + Stop hooks). Open it with `pm-agent serve`. No ticketing gate."
     }
   ]
 }

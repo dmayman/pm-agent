@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>pm-agent — ledger</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <div class="mark" aria-hidden="true">
+        <span class="mark-line"></span>
+        <span class="mark-bead b1"></span>
+        <span class="mark-bead b2"></span>
+        <span class="mark-bead b3"></span>
+      </div>
+      <div class="brand-id">
+        <div class="repo"><span class="owner" id="repoOwner">—</span><span class="name" id="repoName"></span></div>
+        <div class="capture" id="capture" hidden>
+          <span class="pulse"></span><span class="cap-label">observer</span>
+        </div>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <a class="nav-item" data-view="timeline" href="#/timeline">
+        <span class="nav-mark"></span>
+        <span class="nav-text">Timeline</span>
+      </a>
+      <a class="nav-item" data-view="inflight" href="#/inflight">
+        <span class="nav-mark"></span>
+        <span class="nav-text">In flight</span>
+        <span class="nav-badge" id="inflightBadge"></span>
+      </a>
+    </nav>
+
+    <div class="rail-spacer"></div>
+
+    <div class="legend" id="legend" aria-hidden="true"></div>
+
+    <div class="rail-foot">
+      <span id="looseFoot" class="loose-foot"></span>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    <header class="topbar" id="topbar"></header>
+    <section class="view" id="view"></section>
+  </main>
+</div>
+<script src="/app.js" defer></script>
+</body>
+</html>
