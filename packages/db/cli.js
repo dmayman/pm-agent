@@ -390,7 +390,9 @@ async function cmdIngest(argv) {
     return;
   }
   process.stdout.write(
-    dim(`ingested: ${res.glossary ?? 0} issue titles, ${res.merged ?? 0} new merged-PR events\n`)
+    dim(
+      `ingested: ${res.glossary ?? 0} issue titles, ${res.commits ?? 0} commits, ${res.merged ?? 0} merged-PR events\n`
+    )
   );
 }
 

@@ -94,9 +94,12 @@ pm-agent enable            # or: pm-agent enable --explicit
 # restart Claude Code so the session hooks pick it up
 ```
 
-That sets the capture mode, syncs the issue glossary (if `gh` is available), and writes the
-marker. To opt back out, `pm-agent disable` (your timeline data is kept). To remove the plugin
-from a repo entirely, `claude plugin disable pm --scope project`.
+That sets the capture mode, **backfills the timeline from your existing git history** (each
+commit becomes a typed event, threaded under the issue it references — conventional-commit
+messages like `feat(#41): …` thread cleanly), syncs the issue glossary, and records merged-PR
+milestones (the last two need `gh`). So an established project has a populated timeline the
+moment you enable it. To opt back out, `pm-agent disable` (your timeline data is kept). To
+remove the plugin from a repo entirely, `claude plugin disable pm --scope project`.
 
 ## See where things stand
 
