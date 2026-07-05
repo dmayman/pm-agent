@@ -131,6 +131,14 @@ CREATE TABLE IF NOT EXISTS config (
 );
 `;
 
+// Add a column if an older DB doesn't have it yet (CREATE TABLE IF NOT EXISTS won't alter).
+function ensureColumn(db, table, column, decl) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+  }
+}
+
 let _db;
 export function openDb() {
   if (_db) return _db;
@@ -139,6 +147,9 @@ export function openDb() {
   db.exec("PRAGMA busy_timeout = 5000");
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(SCHEMA);
+  // Migrations for DBs created before these columns existed.
+  ensureColumn(db, "threads", "summary", "TEXT"); // Haiku-synthesized plain-language what/why
+  ensureColumn(db, "threads", "summary_event_count", "INTEGER"); // staleness marker
   _db = db;
   return db;
 }
@@ -252,6 +263,15 @@ export function updateThread(db, id, fields) {
 
 function touchThread(db, id) {
   db.prepare("UPDATE threads SET updated_at = ? WHERE id = ?").run(now(), id);
+}
+
+// Store the synthesized summary and the event count it was generated from (for staleness).
+export function setThreadSummary(db, id, summary, eventCount) {
+  db.prepare("UPDATE threads SET summary = ?, summary_event_count = ? WHERE id = ?").run(
+    summary,
+    eventCount,
+    id
+  );
 }
 
 export function listThreads(db, repoId, { status = null } = {}) {

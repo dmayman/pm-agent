@@ -361,8 +361,20 @@ async function cmdEnable(argv) {
     `${bold("pm-agent ledger enabled")} for ${repo.slug}\n` +
       `  capture mode: ${mode}\n` +
       (res.ghAvailable ? `  synced ${res.glossary ?? 0} issue titles for the #-glossary\n` : "") +
-      `  view it:      ${dim("pm-agent timeline")}  ·  ${dim("pm-agent serve")}\n` +
-      `\n  Restart Claude Code so the session hooks pick this up.\n`
+      `  backfilled ${res.commits ?? 0} commits, ${res.merged ?? 0} merged-PR milestones\n`
+  );
+  if (!flags["no-synth"]) {
+    process.stdout.write(`  synthesizing thread summaries (Haiku)…\n`);
+    const { synthesizeAll } = await import("./synthesize.js");
+    const n = await synthesizeAll(db, repo, {
+      staleOnly: true,
+      onProgress: (t) => process.stdout.write(dim(`    · ${t.title.slice(0, 66)}\n`)),
+    });
+    process.stdout.write(dim(`  ${n} thread summaries written\n`));
+  }
+  process.stdout.write(
+    `\n  view it:  ${dim("pm-agent serve")}  ·  ${dim("pm-agent timeline")}\n` +
+      `  Restart Claude Code so the session hooks pick this up.\n`
   );
 }
 
@@ -376,6 +388,25 @@ async function cmdDisable() {
   process.stdout.write(
     `pm-agent ledger disabled for ${repo.slug} (timeline data kept; re-enable with ${dim("pm-agent enable")}).\n`
   );
+}
+
+async function cmdSynthesize(argv) {
+  const { flags } = parseArgs(argv);
+  const db = S.openDb();
+  const repo = requireRepo(db);
+  const { synthesizeThread, synthesizeAll } = await import("./synthesize.js");
+  if (flags.thread) {
+    const id = S.resolveThread(db, repo.id, flags.thread);
+    const ok = synthesizeThread(db, repo, id);
+    process.stdout.write(ok ? dim(`synthesized thread ${id}\n`) : dim("nothing to synthesize\n"));
+    return;
+  }
+  process.stdout.write(dim("synthesizing thread summaries (Haiku)…\n"));
+  const n = await synthesizeAll(db, repo, {
+    staleOnly: !flags.all,
+    onProgress: (t) => process.stdout.write(dim(`  · ${t.title.slice(0, 70)}\n`)),
+  });
+  process.stdout.write(dim(`done — ${n} summaries written\n`));
 }
 
 async function cmdIngest(argv) {
@@ -436,6 +467,8 @@ export async function runLedger(cmd, argv) {
       return cmdContext(argv);
     case "ingest":
       return cmdIngest(argv);
+    case "synthesize":
+      return cmdSynthesize(argv);
     case "enable":
       return cmdEnable(argv);
     case "disable":
@@ -449,7 +482,7 @@ export async function runLedger(cmd, argv) {
     case "observe": {
       const { observe, observeWorker } = await import("./observe.js");
       const workerIdx = argv.indexOf("--worker");
-      if (workerIdx !== -1) observeWorker(argv[workerIdx + 1]);
+      if (workerIdx !== -1) await observeWorker(argv[workerIdx + 1]);
       else observe();
       return;
     }

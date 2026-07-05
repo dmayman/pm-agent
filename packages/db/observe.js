@@ -4,13 +4,13 @@
 // worker to distill it into ledger events, so the user's turn ends with zero added
 // latency. No-ops unless capture=observer — that's how the toggle works at the hook level.
 
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import * as S from "./store.js";
+import { runHaiku } from "./haiku.js";
 
-const HAIKU = "claude-haiku-4-5";
 const MIN_DIGEST_CHARS = 200; // below this there's nothing worth distilling
 const MAX_DIGEST_CHARS = 8000; // keep Haiku's input cheap; take the tail if larger
 
@@ -148,25 +148,15 @@ export function observe(cwd = process.cwd()) {
 }
 
 // The detached worker: call Haiku, write the events it distilled, clean up.
-export function observeWorker(jobFile) {
+export async function observeWorker(jobFile) {
   let job;
   try {
     job = JSON.parse(readFileSync(jobFile, "utf8"));
   } catch {
     return;
   }
-  let output = "";
-  try {
-    output = execFileSync("claude", ["-p", job.prompt, "--model", HAIKU], {
-      cwd: job.root,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 60000,
-      maxBuffer: 4 * 1024 * 1024,
-      // Mark this sub-session so its own Stop hook won't re-trigger the observer.
-      env: { ...process.env, PM_AGENT_OBSERVING: "1" },
-    });
-  } catch {
+  const output = runHaiku(job.prompt, job.root);
+  if (!output) {
     cleanup(jobFile);
     return;
   }
@@ -175,6 +165,7 @@ export function observeWorker(jobFile) {
     const db = S.openDb();
     const repo = db.prepare("SELECT * FROM repos WHERE slug = ?").get(job.repoSlug);
     if (repo) {
+      const touched = new Set();
       for (const e of events) {
         if (!e || !e.type || !e.summary) continue;
         const threadId = e.thread ? S.resolveThread(db, repo.id, String(e.thread)) : null;
@@ -185,6 +176,12 @@ export function observeWorker(jobFile) {
           refs: e.refs && typeof e.refs === "object" ? e.refs : null,
           source: "observer",
         });
+        if (threadId) touched.add(threadId);
+      }
+      // Keep the plain-language summary of any thread we just added to fresh.
+      if (touched.size) {
+        const { synthesizeThread } = await import("./synthesize.js");
+        for (const id of touched) synthesizeThread(db, repo, id);
       }
     }
   }

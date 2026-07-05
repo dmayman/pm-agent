@@ -358,6 +358,7 @@ switch (cmd) {
   case "context":
   case "observe":
   case "ingest":
+  case "synthesize":
   case "serve": {
     // Lazily load the ledger (pulls in node:sqlite) so install/update stay dependency-light.
     const { runLedger } = await import("../packages/db/cli.js");
