@@ -1,6 +1,6 @@
 {
   "name": "@dmayman/pm-agent",
-  "version": "0.3.1",
+  "version": "1.0.0",
   "description": "A Claude Code plugin that makes GitHub Issues your source of truth: a PM agent and /pm:* commands that scope ideas into issues, sequence work, and keep coding sessions from colliding.",
   "type": "module",
   "publishConfig": {

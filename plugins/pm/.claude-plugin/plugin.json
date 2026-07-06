@@ -1,6 +1,6 @@
 {
   "name": "pm",
-  "version": "0.3.1",
+  "version": "1.0.0",
   "description": "An observational work ledger: Claude silently records what's planned, in progress, and finished across all your worktrees into a global timeline you can open for instant clarity. No ticketing gate, no ceremony.",
   "author": {
     "name": "David Mayman"
