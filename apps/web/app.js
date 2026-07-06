@@ -356,11 +356,13 @@ async function renderThread(force){
 
 // ---- work: day-grouped initiatives, lifecycle-first --------------------------
 // A single commit/merge — the deepest detail, demoted beneath the story.
-function evidenceRow(ev){
+function evidenceRow(ev, opts){
   const refs = refChips(ev.refs);
   const dot = typeMeta(ev.type).node === "hollow" ? "ev-dot hollow" : "ev-dot";
+  const time = (opts && opts.hideTime) ? ""
+    : `<span class="ev-time">${fmtShortDate(ev.ts)}</span>`;
   return `<div class="ev-line" style="--hue:${hueVar(ev.type)}">`
-    + `<span class="ev-time">${fmtShortDate(ev.ts)}</span>`
+    + time
     + `<span class="${dot}"></span>`
     + `<span class="ev-type">${esc(typeMeta(ev.type).label)}</span>`
     + `<span class="ev-sum">${esc(ev.summary)}</span>`
@@ -412,7 +414,8 @@ function issueRow(iss){
 function expanderBody(id){
   const openLink = `<a class="exp-open" href="#/thread/${esc(id)}">Open initiative<span class="arw"> →</span></a>`;
   const d = state.threadCache.get(String(id));
-  if(!d) return openLink + `<div class="exp-loading">reading initiative…</div>`;
+  if(!d) return `<div class="exp-loading">reading initiative…</div>`
+    + `<div class="exp-foot">${openLink}</div>`;
   const issues = (d.issues || []).slice()
     .sort((a, b) => (isUnfinished(b.status) - isUnfinished(a.status))
       || (b.number - a.number));
@@ -421,15 +424,16 @@ function expanderBody(id){
     ? `<div class="exp-issues">${issues.map(issueRow).join("")}</div>`
     : `<div class="exp-none">no issues linked to this initiative yet</div>`;
   const evId = "ev-" + id;
-  const commits = events.length
-    ? `<div class="exp-commits">`
-      + `<button class="commits-toggle" data-target="${evId}" aria-expanded="false">`
+  // footer row: the commits disclosure sits at the left, "Open initiative" at the right;
+  // the commit list (when toggled open) drops full-width beneath.
+  const toggle = events.length
+    ? `<button class="commits-toggle" data-target="${evId}" aria-expanded="false">`
       +   `<span class="chev">›</span> ${events.length} commit${events.length === 1 ? "" : "s"} &amp; merge${events.length === 1 ? "" : "s"}</button>`
-      + `<div class="commits-list" id="${evId}" hidden>${events.map(evidenceRow).join("")}</div>`
-      + `</div>`
+    : `<span></span>`;
+  const commitsList = events.length
+    ? `<div class="commits-list" id="${evId}" hidden>${events.map((ev) => evidenceRow(ev)).join("")}</div>`
     : "";
-  // the open-initiative affordance floats to the card's top-right (positioned by CSS)
-  return openLink + issuesHtml + commits;
+  return issuesHtml + `<div class="exp-foot">${toggle}${openLink}</div>` + commitsList;
 }
 
 // a thread as a primary row (used in both Days and Threads modes)
@@ -559,8 +563,8 @@ async function renderWork(force){
       if(unfilter) entries = entries.filter((t) => unfinishedThreadIds.has(t.id));
       const rows = entries.map((t) => threadRow(t, g.key + ":" + t.id, idx++)).join("");
       const loose = (!unfilter && g.loose.length)
-        ? `<div class="day-loose"><div class="day-loose-head">Not tied to an initiative</div>`
-          + `${g.loose.map(evidenceRow).join("")}</div>`
+        ? `<div class="day-loose"><div class="day-loose-head">Other events</div>`
+          + `${g.loose.map((ev) => evidenceRow(ev, { hideTime: true })).join("")}</div>`
         : "";
       if(!rows && !loose) return "";
       const dl = dayLabel(g.when);

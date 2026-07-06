@@ -282,7 +282,6 @@ a.issue-branch{ text-decoration:none; transition:color .16s; }
 a.issue-branch:hover{ color:var(--ink); }
 
 /* commits & merges — demoted, nested behind a further disclosure */
-.exp-commits{ margin-top:12px; padding-top:11px; border-top:1px solid var(--line); }
 .commits-toggle{ display:inline-flex; align-items:center; gap:7px; padding:3px 0;
   background:none; border:none; cursor:pointer; font-family:var(--mono); font-size:10.5px;
   letter-spacing:0.03em; color:var(--ink-mute); transition:color .16s; }
@@ -293,18 +292,21 @@ a.issue-branch:hover{ color:var(--ink); }
 .commits-list{ margin-top:6px; display:flex; flex-direction:column; gap:1px; }
 .commits-list[hidden]{ display:none; }
 
-/* the open-initiative affordance — a stroke button pinned to the card's top-right corner */
-.exp-open{ position:absolute; top:15px; right:16px; z-index:3;
-  display:inline-flex; align-items:center; gap:5px; padding:6px 12px; border-radius:8px;
-  border:1px solid var(--line-strong); background:var(--bg-1);
+/* footer row: commits disclosure on the left, "Open initiative" on the right */
+.exp-foot{ display:flex; align-items:center; justify-content:space-between; gap:12px;
+  margin-top:12px; padding-top:11px; border-top:1px solid var(--line); }
+.exp-foot .commits-toggle{ padding:0; }
+/* the open-initiative affordance — a stroke button, bottom-right of the expander */
+.exp-open{ flex:none; display:inline-flex; align-items:center; gap:5px; padding:6px 12px;
+  border-radius:8px; border:1px solid var(--line-strong); background:var(--bg-1);
   font-family:var(--mono); font-size:11px; color:var(--ink-dim); text-decoration:none;
   transition:background .16s, color .16s, border-color .16s; }
 .exp-open:hover{ background:var(--bg-hi); color:var(--ink); border-color:rgba(233,240,238,0.2); }
 .exp-open .arw{ transition:transform .16s; }
 .exp-open:hover .arw{ transform:translateX(2px); }
 
-/* unthreaded events that fell on a day — labelled so it's clear they belong to no initiative */
-.day-loose{ margin-top:10px; padding:13px 0 6px 46px; display:flex; flex-direction:column; gap:1px;
+/* events that fell on a day but belong to no initiative — a quiet "Other events" list */
+.day-loose{ margin-top:10px; padding:13px 0 6px 0; display:flex; flex-direction:column; gap:1px;
   border-top:1px solid var(--line); }
 .day-loose-head{ font-family:var(--mono); font-size:9.5px; letter-spacing:0.14em;
   text-transform:uppercase; color:var(--ink-mute); margin-bottom:9px; }
