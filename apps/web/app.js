@@ -58,6 +58,21 @@ async function api(path){
 function pad2(n){ return n < 10 ? "0" + n : "" + n; }
 function fmtTime(d){ return pad2(d.getHours()) + ":" + pad2(d.getMinutes()); }
 
+// compact token + cost formatting for the Cost view
+function fmtTokens(n){
+  n = Number(n) || 0;
+  if(n >= 1e6) return (n/1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+  if(n >= 1e3) return (n/1e3).toFixed(n >= 1e4 ? 0 : 1) + "k";
+  return String(n);
+}
+function fmtCost(n){
+  n = Number(n) || 0;
+  if(n === 0) return "$0";
+  if(n < 0.01) return "$" + n.toFixed(4);
+  if(n < 1) return "$" + n.toFixed(3);
+  return "$" + n.toFixed(2);
+}
+
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const WEEK = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 function dayKey(d){ return d.getFullYear() + "-" + pad2(d.getMonth()+1) + "-" + pad2(d.getDate()); }
@@ -132,6 +147,7 @@ function parseHash(){
   const parts = h.split("/").filter(Boolean);
   if(parts[0] === "thread" && parts[1]) return { view:"thread", threadId:parts[1] };
   if(parts[0] === "inflight") return { view:"inflight" };
+  if(parts[0] === "usage") return { view:"usage" };
   if(parts[0] === "work"){
     const mode = WORK_MODES.includes(parts[1]) ? parts[1] : "days";
     return { view:"work", workMode:mode };
@@ -140,7 +156,9 @@ function parseHash(){
 }
 
 function syncNav(){
-  const activeNav = state.view === "inflight" ? "inflight" : "work"; // thread drill-in belongs to Work
+  // thread drill-in belongs to Work; usage stands alone
+  const activeNav = state.view === "inflight" ? "inflight"
+    : state.view === "usage" ? "usage" : "work";
   document.querySelectorAll(".nav-item").forEach((a) => {
     a.classList.toggle("active", a.dataset.view === activeNav);
   });
@@ -164,6 +182,7 @@ async function refresh(force){
   try{
     if(state.view === "inflight")    await renderInflight(force);
     else if(state.view === "thread") await renderThread(force);
+    else if(state.view === "usage")  await renderUsage(force);
     else                             await renderWork(force);
   }catch(err){
     if(!state.sig) viewEl.innerHTML = `<div class="empty"><div class="glyph"></div>`
@@ -586,6 +605,72 @@ async function renderInflight(force){
   state.sig = sig;
 }
 
+// ---- cost / token usage ----------------------------------------------------
+function usageStat(value, label){
+  return `<div class="ustat"><div class="ustat-v">${value}</div><div class="ustat-l">${esc(label)}</div></div>`;
+}
+
+// Total tokens processed, including the cached system-prompt reads/writes that dominate the
+// cost of each `claude -p` call — so the token count and the dollar cost tell the same story.
+function totalTokens(d){
+  return (d.input || 0) + (d.output || 0) + (d.cache_read || 0) + (d.cache_creation || 0);
+}
+
+function usageDayRow(d, max){
+  const tokens = totalTokens(d);
+  const pct = max > 0 ? Math.max(2, Math.round((tokens / max) * 100)) : 0;
+  const dt = new Date(d.day + "T00:00:00");
+  const label = MONTHS[dt.getMonth()] + " " + dt.getDate();
+  return `<div class="uday">`
+    + `<div class="uday-date">${esc(label)}</div>`
+    + `<div class="uday-bar"><span style="width:${pct}%"></span></div>`
+    + `<div class="uday-tok">${fmtTokens(tokens)}</div>`
+    + `<div class="uday-cost">${fmtCost(d.cost)}</div>`
+    + `</div>`;
+}
+
+async function renderUsage(force){
+  const data = await api("/api/usage?days=30");
+  const days = data.days || [];
+  const total = data.total || { input:0, output:0, cost:0, calls:0, since:null };
+  const totTokens = totalTokens(total);
+
+  const sig = "us:" + (total.calls || 0) + ":" + Math.round((total.cost || 0) * 1e6) + ":" + days.length;
+  if(!force && sig === state.sig) return;
+
+  const maxDay = days.reduce((m, d) => Math.max(m, totalTokens(d)), 0);
+  const activeDays = days.filter((d) => totalTokens(d) > 0).length;
+  const perDay = activeDays ? totTokens / activeDays : 0;
+
+  let html = `<div class="usage">`;
+  html += `<div class="ustats">`
+    + usageStat(fmtCost(total.cost), "spent, all time")
+    + usageStat(fmtTokens(totTokens), "tokens")
+    + usageStat(String(total.calls || 0), "Haiku calls")
+    + usageStat(fmtTokens(Math.round(perDay)), "tokens / active day")
+    + `</div>`;
+
+  if(days.length){
+    html += `<div class="section"><div class="section-head"><h2>Per day</h2>`
+      + `<span class="rule"></span><span class="n">last 30d</span></div>`;
+    html += `<div class="udays">${days.map((d) => usageDayRow(d, maxDay)).join("")}</div></div>`;
+  } else {
+    html += `<div class="empty"><div class="glyph"></div>`
+      + `<div class="e-title">No spend recorded yet</div>`
+      + `<div class="e-sub">token usage shows up here after the tool runs Haiku (observing a turn, synthesizing a summary, or grouping issues)</div></div>`;
+  }
+  html += `</div>`;
+
+  const sinceTxt = total.since ? " · since " + total.since : "";
+  setTopbar(`<span class="tb-title">Cost</span>`
+    + `<span class="tb-sub">what this tool has spent${sinceTxt}</span>`
+    + `<span class="tb-spacer"></span>${liveTag()}`);
+  $("#usageBadge").textContent = total.cost ? fmtCost(total.cost) : "";
+
+  paint(html);
+  state.sig = sig;
+}
+
 // ---- chrome (topbar, rail, meta) -------------------------------------------
 function liveTag(){
   const cap = state.meta && state.meta.capture ? state.meta.capture : "live";
@@ -615,6 +700,7 @@ async function loadMeta(){
     cap.classList.toggle("explicit", m.capture === "explicit");
     $(".cap-label", cap).textContent = m.capture || "live";
     $("#workBadge").textContent = m.threads != null ? m.threads : "";
+    $("#usageBadge").textContent = m.cost ? fmtCost(m.cost) : "";
     $("#looseFoot").innerHTML = m.loose
       ? `<span class="n">${m.loose}</span> loose end${m.loose===1?"":"s"} open`
       : `no loose ends`;

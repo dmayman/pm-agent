@@ -155,14 +155,17 @@ export async function observeWorker(jobFile) {
   } catch {
     return;
   }
-  const output = runHaiku(job.prompt, job.root);
+  // Open the DB first so the Haiku call can be metered against this repo.
+  const db = S.openDb();
+  const repo = db.prepare("SELECT * FROM repos WHERE slug = ?").get(job.repoSlug);
+  const output = runHaiku(job.prompt, job.root, {
+    meter: repo ? { db, repoId: repo.id, kind: "observer" } : null,
+  });
   if (!output) {
     cleanup(jobFile);
     return;
   }
   const events = extractJsonArray(output);
-  const db = S.openDb();
-  const repo = db.prepare("SELECT * FROM repos WHERE slug = ?").get(job.repoSlug);
   if (repo) {
     const touched = new Set();
     for (const e of events) {

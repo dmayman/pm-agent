@@ -62,12 +62,14 @@ function api(db, repo, url) {
   const p = url.pathname;
 
   if (p === "/api/meta") {
+    const u = S.usageTotals(db, repo.id);
     return {
       repo: repo.slug,
       root: repo.root,
       capture: S.effectiveConfig(db, repo.slug, "capture", "observer"),
       threads: S.listThreads(db, repo.id).length,
       loose: S.listLooseEnds(db, repo.id).length,
+      cost: u ? u.cost : 0,
     };
   }
   if (p === "/api/timeline") {
@@ -90,6 +92,14 @@ function api(db, repo, url) {
         .filter((t) => t.status !== "done")
         .map((t) => withWork(db, t)),
       loose: S.listLooseEnds(db, repo.id).map(decodeRefs),
+    };
+  }
+  if (p === "/api/usage") {
+    const days = Number(q.get("days")) || 30;
+    return {
+      days: S.usageByDay(db, repo.id, { days }),
+      total: S.usageTotals(db, repo.id),
+      window: days,
     };
   }
   if (p === "/api/loose") return S.listLooseEnds(db, repo.id).map(decodeRefs);

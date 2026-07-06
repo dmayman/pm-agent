@@ -151,7 +151,7 @@ export async function clusterIntoInitiatives(db, repo) {
     `Issues:\n${list}\n\n` +
     `Return ONLY a JSON array: [{"initiative":"<name>","issues":[<numbers>]}]`;
 
-  const out = runHaiku(prompt, repo.root, { timeout: 90000 });
+  const out = runHaiku(prompt, repo.root, { timeout: 90000, meter: { db, repoId: repo.id, kind: "cluster" } });
   if (!out) return 0;
   let groups;
   try {

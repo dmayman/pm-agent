@@ -108,7 +108,8 @@ function storeSummary(db, threadId, out, signal) {
 export function synthesizeThread(db, repo, threadId) {
   const built = buildThreadPrompt(db, repo, threadId);
   if (!built) return false;
-  return storeSummary(db, threadId, runHaiku(built.prompt, repo.root), built.signal);
+  const out = runHaiku(built.prompt, repo.root, { meter: { db, repoId: repo.id, kind: "synthesis" } });
+  return storeSummary(db, threadId, out, built.signal);
 }
 
 // Synthesize threads that need it, running the Haiku calls concurrently. staleOnly skips
@@ -124,7 +125,7 @@ export async function synthesizeAll(db, repo, { staleOnly = true, onProgress = n
   }
   let n = 0;
   await pool(targets, concurrency, async (t) => {
-    const out = await runHaikuAsync(t.prompt, repo.root);
+    const out = await runHaikuAsync(t.prompt, repo.root, { meter: { db, repoId: repo.id, kind: "synthesis" } });
     if (storeSummary(db, t.thread.id, out, t.signal)) {
       n++;
       if (onProgress) onProgress(t.thread, n);

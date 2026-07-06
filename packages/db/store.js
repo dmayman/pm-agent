@@ -129,6 +129,20 @@ CREATE TABLE IF NOT EXISTS config (
   value TEXT,
   PRIMARY KEY (scope, key)
 );
+
+-- One row per Haiku call the tool makes, so the operator can see what it costs.
+CREATE TABLE IF NOT EXISTS usage (
+  id                    INTEGER PRIMARY KEY,
+  repo_id               INTEGER REFERENCES repos(id),
+  ts                    TEXT NOT NULL,   -- UTC ISO; grouped by local day for display
+  kind                  TEXT,            -- observer | synthesis | cluster
+  input_tokens          INTEGER DEFAULT 0,
+  output_tokens         INTEGER DEFAULT 0,
+  cache_read_tokens     INTEGER DEFAULT 0,
+  cache_creation_tokens INTEGER DEFAULT 0,
+  cost_usd              REAL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS usage_repo_ts ON usage(repo_id, ts);
 `;
 
 // Add a column if an older DB doesn't have it yet (CREATE TABLE IF NOT EXISTS won't alter).
@@ -443,4 +457,63 @@ export function effectiveConfig(db, slug, key, fallback = null) {
   const repoVal = getConfig(db, slug, key, null);
   if (repoVal != null) return repoVal;
   return getConfig(db, "global", key, fallback);
+}
+
+// ---------------------------------------------------------------------------
+// Usage (token accounting for the tool's own Haiku calls)
+// ---------------------------------------------------------------------------
+
+// Record one Haiku call's token/cost usage. `usage` is the raw block from `claude -p
+// --output-format json` (input_tokens, output_tokens, cache_* variants). Best-effort.
+export function logUsage(db, repoId, { kind = null, usage = null, cost = 0 } = {}) {
+  const u = usage || {};
+  db.prepare(
+    `INSERT INTO usage
+       (repo_id, ts, kind, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    repoId ?? null,
+    now(),
+    kind,
+    Number(u.input_tokens) || 0,
+    Number(u.output_tokens) || 0,
+    Number(u.cache_read_input_tokens) || 0,
+    Number(u.cache_creation_input_tokens) || 0,
+    Number(cost) || 0
+  );
+}
+
+// Token/cost spend grouped by local calendar day (newest first), for the last `days` days.
+export function usageByDay(db, repoId, { days = 30 } = {}) {
+  return db
+    .prepare(
+      `SELECT date(ts, 'localtime') AS day,
+              SUM(input_tokens)          AS input,
+              SUM(output_tokens)         AS output,
+              SUM(cache_read_tokens)     AS cache_read,
+              SUM(cache_creation_tokens) AS cache_creation,
+              SUM(cost_usd)              AS cost,
+              COUNT(*)                   AS calls
+         FROM usage
+        WHERE repo_id = ? AND date(ts, 'localtime') >= date('now', 'localtime', ?)
+        GROUP BY day
+        ORDER BY day DESC`
+    )
+    .all(repoId, `-${Math.max(0, days - 1)} days`);
+}
+
+// Grand totals over the whole recorded history for this repo.
+export function usageTotals(db, repoId) {
+  return db
+    .prepare(
+      `SELECT COALESCE(SUM(input_tokens), 0)          AS input,
+              COALESCE(SUM(output_tokens), 0)         AS output,
+              COALESCE(SUM(cache_read_tokens), 0)     AS cache_read,
+              COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation,
+              COALESCE(SUM(cost_usd), 0)              AS cost,
+              COUNT(*)                                AS calls,
+              MIN(date(ts, 'localtime'))              AS since
+         FROM usage WHERE repo_id = ?`
+    )
+    .get(repoId);
 }
