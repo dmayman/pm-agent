@@ -230,6 +230,28 @@ export function getRepo(db, cwd = process.cwd()) {
   return { ...row, slug: info.slug };
 }
 
+// Look up a repo by its slug (owner/name or local:<hash>). Returns null if unknown — used
+// by the operator UI to switch which project's ledger it's viewing.
+export function getRepoBySlug(db, slug) {
+  return db.prepare("SELECT * FROM repos WHERE slug = ?").get(slug) || null;
+}
+
+// Every repo the ledger knows about, most-recently-active first, with light activity counts
+// so the operator UI can offer a project switcher. Repos with no events yet still appear
+// (freshly initialized), but sort to the bottom.
+export function listRepos(db) {
+  return db
+    .prepare(
+      `SELECT r.id, r.slug, r.root, r.created_at,
+         (SELECT COUNT(*) FROM threads t WHERE t.repo_id = r.id) AS threads,
+         (SELECT COUNT(*) FROM events  e WHERE e.repo_id = r.id) AS events,
+         (SELECT MAX(e.ts) FROM events e WHERE e.repo_id = r.id) AS last_event_ts
+       FROM repos r
+       ORDER BY (last_event_ts IS NULL), last_event_ts DESC, r.created_at DESC`
+    )
+    .all();
+}
+
 // ---------------------------------------------------------------------------
 // Threads
 // ---------------------------------------------------------------------------

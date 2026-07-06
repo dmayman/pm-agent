@@ -22,7 +22,9 @@
     "plugins",
     "packages",
     "apps",
-    "docs"
+    "docs",
+    "scripts/observer-hostname-setup.sh",
+    "scripts/observer-hostname-uninstall.sh"
   ],
   "keywords": [
     "claude-code",

@@ -74,8 +74,15 @@ function ghUrl(kind, val){
   return null;
 }
 
+// Tag a request with the selected project so the server scopes it to that repo's ledger.
+// The projects list itself is repo-agnostic, so it's left untagged.
+function withProject(path){
+  if(!state.project || path.startsWith("/api/projects")) return path;
+  return path + (path.includes("?") ? "&" : "?") + "repo=" + encodeURIComponent(state.project);
+}
+
 async function api(path){
-  const r = await fetch(path, { headers:{ accept:"application/json" } });
+  const r = await fetch(withProject(path), { headers:{ accept:"application/json" } });
   if(!r.ok) throw new Error(path + " -> " + r.status);
   return r.json();
 }
@@ -162,6 +169,10 @@ const state = {
   filter: "all",           // all | unfinished
   threadId: null,
   meta: null,
+  project: null,           // slug of the repo currently being viewed
+  projects: [],            // all repos in the ledger (for the switcher)
+  currentProject: null,    // slug of the repo the server runs in ("here")
+  menuOpen: false,         // project switcher dropdown state
   seenEvents: new Set(),   // event ids we've already rendered (for new-flash)
   expanded: new Set(),     // "day:threadId" or "threadId" keys that are open
   threadCache: new Map(),  // id -> {thread, issues, events} (lazy, for expanders)
@@ -767,6 +778,101 @@ async function loadMeta(){
   }catch(e){ /* meta is best-effort chrome; views still render */ }
 }
 
+// ---- project switcher -------------------------------------------------------
+// The ledger is one DB spanning every repo on the machine; the server defaults to the repo
+// it was launched in but can scope any request to another via ?repo=. This lets the operator
+// hop between project dashboards from the rail.
+function splitSlug(slug){
+  const s = String(slug || "");
+  const i = s.indexOf("/");
+  return i >= 0 ? [s.slice(0, i + 1), s.slice(i + 1)] : [s, ""];
+}
+
+const savedProject = () => { try{ return localStorage.getItem("pm-project"); }catch(e){ return null; } };
+const rememberProject = (s) => { try{ localStorage.setItem("pm-project", s); }catch(e){} };
+
+async function loadProjects(){
+  let d;
+  try{ d = await api("/api/projects"); }catch(e){ return; }
+  state.projects = d.projects || [];
+  state.currentProject = d.current || null;
+  const known = (s) => !!s && state.projects.some((p) => p.slug === s);
+  // Keep the current selection if it's still valid; else restore the last-picked one,
+  // else fall back to the repo the server runs in (the default project).
+  if(!known(state.project)){
+    const saved = savedProject();
+    state.project = known(saved) ? saved
+      : known(state.currentProject) ? state.currentProject
+      : (state.projects[0] && state.projects[0].slug) || null;
+  }
+  renderSwitcher();
+}
+
+// Only offer the switcher when there's more than one project; otherwise the rail reads as
+// a plain repo label, exactly as before.
+function renderSwitcher(){
+  const btn = $("#repoBtn");
+  const chev = $("#repoChev");
+  const multi = state.projects.length > 1;
+  if(btn) btn.disabled = !multi;
+  if(chev) chev.hidden = !multi;
+  if(!multi) closeMenu();
+  renderMenu();
+}
+
+function projHint(p){
+  const n = p.threads || 0;
+  return n ? n + " initiative" + (n === 1 ? "" : "s") : "no activity";
+}
+
+function renderMenu(){
+  const menu = $("#repoMenu");
+  if(!menu) return;
+  menu.innerHTML = state.projects.map((p) => {
+    const [owner, name] = splitSlug(p.slug);
+    const sel = p.slug === state.project;
+    const here = p.slug === state.currentProject;
+    return `<button class="repo-opt ${sel ? "sel" : ""}" type="button" role="option" `
+      + `aria-selected="${sel}" data-slug="${esc(p.slug)}">`
+      +   `<span class="ro-tick">${sel ? "✓" : ""}</span>`
+      +   `<span class="ro-id"><span class="ro-owner">${esc(owner)}</span><span class="ro-name">${esc(name || owner)}</span></span>`
+      +   `<span class="ro-hint">${esc(projHint(p))}</span>`
+      +   (here ? `<span class="ro-here">here</span>` : "")
+      + `</button>`;
+  }).join("");
+}
+
+function openMenu(){
+  if(state.menuOpen || state.projects.length < 2) return;
+  state.menuOpen = true;
+  $("#repoMenu").hidden = false;
+  $("#repoBtn").setAttribute("aria-expanded", "true");
+}
+function closeMenu(){
+  if(!state.menuOpen) return;
+  state.menuOpen = false;
+  const menu = $("#repoMenu");
+  const btn = $("#repoBtn");
+  if(menu) menu.hidden = true;
+  if(btn) btn.setAttribute("aria-expanded", "false");
+}
+
+async function selectProject(slug){
+  closeMenu();
+  if(!slug || slug === state.project) return;
+  state.project = slug;
+  rememberProject(slug);
+  // Wipe every per-project cache — we're looking at a different ledger now.
+  state.sig = ""; state.primed = false;
+  state.seenEvents.clear(); state.threadCache.clear(); state.expanded.clear();
+  renderMenu();
+  await loadMeta();
+  // A thread id belongs to the old project; drop back to Work rather than 404. Otherwise
+  // just re-render the current view against the new project.
+  if(state.view === "thread"){ location.hash = "#/work"; }
+  else { state.threadId = null; await refresh(true); }
+}
+
 // ---- interactions -----------------------------------------------------------
 // expand a thread row: reveal its issues (lazy-fetched), commits demoted below
 async function toggleRow(head){
@@ -819,19 +925,41 @@ function initInteractions(){
     e.preventDefault();
     if(state.filter !== f.dataset.filter){ state.filter = f.dataset.filter; refresh(true); }
   });
+
+  // project switcher: the rail repo label opens a dropdown of every project in the ledger
+  $("#repoBtn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    if(state.projects.length < 2) return;
+    state.menuOpen ? closeMenu() : openMenu();
+  });
+  $("#repoMenu").addEventListener("click", (e) => {
+    const opt = e.target.closest(".repo-opt");
+    if(!opt) return;
+    e.preventDefault();
+    selectProject(opt.dataset.slug);
+  });
+  // dismiss the menu on an outside click or Escape
+  document.addEventListener("click", (e) => {
+    if(state.menuOpen && !e.target.closest("#repoMenu") && !e.target.closest("#repoBtn")) closeMenu();
+  });
+  document.addEventListener("keydown", (e) => { if(e.key === "Escape") closeMenu(); });
 }
 
 async function boot(){
   renderLegend();
   initInteractions();
   viewEl.innerHTML = `<div class="loading">reading the ledger…</div>`;
+  await loadProjects();
   await loadMeta();
   window.addEventListener("hashchange", onRoute);
   await onRoute();
   // gentle live polling
   setInterval(() => { loadMeta(); refresh(false); }, 4000);
-  // keep relative ages / dates fresh even without new data
-  setInterval(() => { if(state.view === "inflight" || state.view === "work") refresh(true); }, 60000);
+  // keep relative ages / dates fresh even without new data; also pick up new projects
+  setInterval(() => {
+    loadProjects();
+    if(state.view === "inflight" || state.view === "work") refresh(true);
+  }, 60000);
 }
 
 boot();

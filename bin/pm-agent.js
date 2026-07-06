@@ -54,6 +54,14 @@ SET UP A REPO
                        idea→ready→status:in-progress labels, and drop in the 💡 Idea
                        template. Needs an authenticated \`gh\`. Idempotent.
 
+SET UP THE MACHINE (once, macOS)
+  observer-url       Make the dashboard reachable at a bare http://observer
+                       (maps /etc/hosts + redirects :80→:4477). Needs \`sudo\`;
+                       run once per machine, not per repo. --uninstall to revert.
+  observer-autostart Keep the dashboard server always running (a login LaunchAgent,
+                       so you never run \`serve\` by hand). Run WITHOUT sudo.
+                       --uninstall to revert. Pair with observer-url for \`observer/\`.
+
 LEDGER COMMANDS (the observational timeline — see docs/ledger.md)
   timeline           Show the activity timeline (--days N, --thread REF, --json)
   inflight           Active threads, recent events, and loose ends
@@ -453,12 +461,135 @@ async function cmdSetup(argv) {
     const portArgs = argv.filter((a) => a.startsWith("--port"));
     await runLedger("serve", portArgs); // blocks until Ctrl-C
   } else {
+    // The pretty http://observer URL is a machine-global, once-per-machine step — surface
+    // it here (offer it, or point at it) but never run its sudo from this per-repo setup.
+    const url = observerWired() ? "type  observer/  in your browser" : "http://localhost:4477";
+    const prettyHint = observerWired()
+      ? ""
+      : "\n     Tired of the port? One time, machine-wide:  sudo pm-agent observer-url\n" +
+        "       — then you just type  observer/  in your browser (no port, ever).\n";
     process.stdout.write(
       "  ✅ Setup complete.\n\n" +
-        "     See the dashboard:   pm-agent serve      → http://localhost:4477\n" +
+        `     See the dashboard:   pm-agent serve      → ${url}\n` +
+        prettyHint +
         "     Restart Claude Code so the session hooks pick up the ledger.\n"
     );
   }
+}
+
+// Is the http://observer alias already wired into this machine? (Just the /etc/hosts half —
+// enough to decide whether `setup` should offer the one-time step or point at the live URL.)
+function observerWired() {
+  try {
+    return /^[^#\n]*\bobserver\b/m.test(readFileSync("/etc/hosts", "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+// Machine-global, one-time: make the operator UI reachable at a bare http://observer by
+// wiring /etc/hosts + a loopback :80→:4477 pf redirect (+ a LaunchDaemon to re-arm pf on
+// boot). Privileged and NOT per-repo, so it's its own command rather than part of `setup`.
+// `--uninstall` reverts every change. macOS-only.
+function cmdObserverUrl(rest) {
+  if (process.platform !== "darwin") {
+    fail(
+      "observer-url is macOS-only (it uses /etc/hosts + pf). Elsewhere, add an\n" +
+        "  /etc/hosts entry for `observer` and redirect :80 → :4477 with your own tooling."
+    );
+  }
+  const undo = rest.includes("--uninstall") || rest.includes("--remove");
+  const script = path.join(
+    PKG_ROOT,
+    "scripts",
+    undo ? "observer-hostname-uninstall.sh" : "observer-hostname-setup.sh"
+  );
+  if (!existsSync(script)) fail(`missing ${script} (reinstall the package).`);
+  if (typeof process.getuid === "function" && process.getuid() !== 0) {
+    process.stderr.write(
+      "This needs root — it edits /etc/hosts and /etc/pf.conf.\n" +
+        `Re-run:  sudo pm-agent observer-url${undo ? " --uninstall" : ""}\n`
+    );
+    process.exit(1);
+  }
+  runLocal("sh", [script]);
+}
+
+// Keep the operator UI always-on via a user-level LaunchAgent (runs `pm-agent serve` at login,
+// restarts if it dies). Unprivileged on purpose — the server writes the ledger as *you*, so
+// this must NOT run under sudo (root-owned db files would lock the normal CLI out). Pairs with
+// `observer-url` (the root port-80 redirect): together, `observer/` is always live.
+function cmdObserverAutostart(rest) {
+  if (process.platform !== "darwin") {
+    fail("observer-autostart is macOS-only (it uses a launchd LaunchAgent).");
+  }
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    fail(
+      "Don't run this with sudo — it installs a LaunchAgent that runs as YOU, so the\n" +
+        "  ledger stays yours. Re-run without sudo:  pm-agent observer-autostart"
+    );
+  }
+  const undo = rest.includes("--uninstall") || rest.includes("--remove");
+  const home = os.homedir();
+  const plist = path.join(home, "Library", "LaunchAgents", "com.pm-agent.observer-server.plist");
+  const uid = process.getuid();
+  const domain = `gui/${uid}`;
+
+  if (undo) {
+    runLocal("launchctl", ["bootout", `${domain}/com.pm-agent.observer-server`], {
+      tolerate: true,
+      capture: true,
+    });
+    runLocal("launchctl", ["unload", plist], { tolerate: true, capture: true });
+    if (existsSync(plist)) {
+      spawnSync("rm", ["-f", plist]);
+    }
+    process.stdout.write("✓ Auto-start removed. The server no longer runs on its own.\n");
+    return;
+  }
+
+  // Point launchd straight at this node + CLI (its PATH is minimal, so no bare `pm-agent`).
+  const node = process.execPath;
+  const cli = path.join(HERE, "pm-agent.js");
+  const log = path.join(home, "Library", "Logs", "pm-agent-observer.log");
+  const body = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.pm-agent.observer-server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${node}</string>
+    <string>${cli}</string>
+    <string>serve</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>WorkingDirectory</key><string>${home}</string>
+  <key>StandardOutPath</key><string>${log}</string>
+  <key>StandardErrorPath</key><string>${log}</string>
+</dict>
+</plist>
+`;
+  mkdirSync(path.dirname(plist), { recursive: true });
+  writeFileSync(plist, body);
+  // Reload cleanly if it was already installed (swallow the "not loaded" noise), then
+  // bootstrap into the GUI session.
+  runLocal("launchctl", ["bootout", `${domain}/com.pm-agent.observer-server`], {
+    tolerate: true,
+    capture: true,
+  });
+  const boot = runLocal("launchctl", ["bootstrap", domain, plist], { tolerate: true, capture: true });
+  if (!boot.ok) runLocal("launchctl", ["load", "-w", plist], { tolerate: true, capture: true });
+
+  process.stdout.write(
+    "✓ Auto-start installed. The dashboard server now runs at login and restarts if it\n" +
+      "  stops — you never have to run `pm-agent serve` by hand again.\n" +
+      `  Logs: ${log}\n\n` +
+      (observerWired()
+        ? "  Just type  observer/  in your browser, anytime.\n"
+        : "  Add the memorable URL too:  sudo pm-agent observer-url  → then type  observer/\n")
+  );
 }
 
 const argv = process.argv.slice(2);
@@ -494,6 +625,12 @@ switch (cmd) {
     break;
   case "setup-issues":
     cmdSetupIssues();
+    break;
+  case "observer-url":
+    cmdObserverUrl(argv.slice(1));
+    break;
+  case "observer-autostart":
+    cmdObserverAutostart(argv.slice(1));
     break;
   case "enable":
   case "disable":

@@ -5,6 +5,7 @@
 
 import http from "node:http";
 import { readFile, stat } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import * as S from "../../packages/db/store.js";
@@ -21,6 +22,19 @@ const MIME = {
   ".woff2": "font/woff2",
   ".ico": "image/x-icon",
 };
+
+// The bare http://observer alias only reaches us when the loopback :80 redirect targets the
+// port we actually bound (the default, 4477). Detect the /etc/hosts entry so the banner can
+// surface the friendly URL — otherwise it'd be a lie.
+function observerAlias(port) {
+  if (port !== 4477) return null;
+  try {
+    const hosts = readFileSync("/etc/hosts", "utf8");
+    return /^[^#\n]*\bobserver\b/m.test(hosts) ? "http://observer" : null;
+  } catch {
+    return null;
+  }
+}
 
 function sendJson(res, status, obj) {
   const body = JSON.stringify(obj);
@@ -57,9 +71,35 @@ async function serveStatic(res, urlPath) {
   }
 }
 
-function api(db, repo, url) {
+// Which repo a request is scoped to: the `?repo=<slug>` override when it names a known repo,
+// otherwise the repo the server was launched inside (the default project).
+function scopeRepo(db, cwdRepo, url) {
+  const slug = url.searchParams.get("repo");
+  if (slug) {
+    const r = S.getRepoBySlug(db, slug);
+    if (r) return r;
+  }
+  return cwdRepo;
+}
+
+function api(db, repo, url, cwdRepo) {
   const q = url.searchParams;
   const p = url.pathname;
+
+  // The project switcher: every repo in the ledger, plus which one is "here" (the cwd repo).
+  if (p === "/api/projects") {
+    return {
+      current: cwdRepo.slug,
+      selected: repo.slug,
+      projects: S.listRepos(db).map((r) => ({
+        slug: r.slug,
+        root: r.root,
+        threads: r.threads,
+        events: r.events,
+        lastActivity: r.last_event_ts,
+      })),
+    };
+  }
 
   if (p === "/api/meta") {
     const u = S.usageTotals(db, repo.id) || {};
@@ -136,17 +176,28 @@ function decodeRefs(e) {
 
 export function serve({ port = 4477, cwd = process.cwd() } = {}) {
   const db = S.openDb();
-  const repo = S.getRepo(db, cwd);
+  // Default project: the repo we're launched inside. When there isn't one — e.g. the server
+  // runs as a background LaunchAgent with no repo cwd — fall back to the most-recently-active
+  // project so the dashboard still opens somewhere; the switcher reaches the rest.
+  let repo = S.getRepo(db, cwd);
   if (!repo) {
-    process.stderr.write("pm-agent serve: not inside a git repository.\n");
-    process.exit(1);
+    const known = S.listRepos(db);
+    if (!known.length) {
+      process.stderr.write(
+        "pm-agent serve: not inside a git repository, and the ledger is empty.\n" +
+          "Run `pm-agent setup` inside a repo first.\n"
+      );
+      process.exit(1);
+    }
+    repo = known[0];
   }
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     try {
       if (url.pathname.startsWith("/api/")) {
-        const result = api(db, repo, url);
+        const scoped = scopeRepo(db, repo, url);
+        const result = api(db, scoped, url, repo);
         const status = result && result.__status ? result.__status : 200;
         if (result) delete result.__status;
         return sendJson(res, status, result);
@@ -158,8 +209,14 @@ export function serve({ port = 4477, cwd = process.cwd() } = {}) {
   });
 
   server.listen(port, () => {
+    // If the http://observer redirect is wired up (scripts/observer-hostname-setup.sh),
+    // it targets the default port — so lead with the pretty URL only when we bound it.
+    const alias = observerAlias(port);
+    const line = alias
+      ? `  → ${alias}   ·   http://localhost:${port}`
+      : `  → http://localhost:${port}`;
     process.stdout.write(
-      `\n  pm-agent operator UI  ·  ${repo.slug}\n  → http://localhost:${port}\n\n  Ctrl-C to stop.\n`
+      `\n  pm-agent operator UI  ·  ${repo.slug}\n${line}\n\n  Ctrl-C to stop.\n`
     );
   });
   server.on("error", (err) => {
