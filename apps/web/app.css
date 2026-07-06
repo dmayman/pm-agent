@@ -486,6 +486,9 @@ body::after{
   font-variant-numeric:tabular-nums; }
 .ustat-l{ font-family:var(--mono); font-size:10.5px; letter-spacing:0.05em;
   color:var(--ink-mute); margin-top:5px; }
+.usage-note{ font-family:var(--mono); font-size:11px; line-height:1.5; color:var(--ink-whisper);
+  margin:-28px 0 40px; max-width:64ch; }
+.usage-note .ui-i{ color:var(--ink-mute); margin-right:2px; }
 .udays{ display:flex; flex-direction:column; }
 .uday{ display:grid; grid-template-columns:64px 1fr 58px 64px; align-items:center;
   gap:14px; padding:7px 0; border-bottom:1px solid var(--line); }

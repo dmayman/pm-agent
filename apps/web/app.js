@@ -625,7 +625,7 @@ function usageDayRow(d, max){
     + `<div class="uday-date">${esc(label)}</div>`
     + `<div class="uday-bar"><span style="width:${pct}%"></span></div>`
     + `<div class="uday-tok">${fmtTokens(tokens)}</div>`
-    + `<div class="uday-cost">${fmtCost(d.cost)}</div>`
+    + `<div class="uday-cost">${d.cost ? "≈" + fmtCost(d.cost) : "$0"}</div>`
     + `</div>`;
 }
 
@@ -642,13 +642,16 @@ async function renderUsage(force){
   const activeDays = days.filter((d) => totalTokens(d) > 0).length;
   const perDay = activeDays ? totTokens / activeDays : 0;
 
+  const estCost = total.cost ? "≈" + fmtCost(total.cost) : "$0";
   let html = `<div class="usage">`;
   html += `<div class="ustats">`
-    + usageStat(fmtCost(total.cost), "spent, all time")
     + usageStat(fmtTokens(totTokens), "tokens")
-    + usageStat(String(total.calls || 0), "Haiku calls")
+    + usageStat(estCost, "at API rates")
+    + usageStat(String(total.calls || 0), "calls")
     + usageStat(fmtTokens(Math.round(perDay)), "tokens / active day")
     + `</div>`;
+  html += `<div class="usage-note"><span class="ui-i">ⓘ</span> Dollar figures estimate `
+    + `API list price — these run on your Claude subscription, which isn't billed per token.</div>`;
 
   if(days.length){
     html += `<div class="section"><div class="section-head"><h2>Per day</h2>`
@@ -662,10 +665,10 @@ async function renderUsage(force){
   html += `</div>`;
 
   const sinceTxt = total.since ? " · since " + total.since : "";
-  setTopbar(`<span class="tb-title">Cost</span>`
-    + `<span class="tb-sub">what this tool has spent${sinceTxt}</span>`
+  setTopbar(`<span class="tb-title">Usage</span>`
+    + `<span class="tb-sub">what this tool has run through Haiku${sinceTxt}</span>`
     + `<span class="tb-spacer"></span>${liveTag()}`);
-  $("#usageBadge").textContent = total.cost ? fmtCost(total.cost) : "";
+  $("#usageBadge").textContent = totTokens ? fmtTokens(totTokens) : "";
 
   paint(html);
   state.sig = sig;
@@ -700,7 +703,7 @@ async function loadMeta(){
     cap.classList.toggle("explicit", m.capture === "explicit");
     $(".cap-label", cap).textContent = m.capture || "live";
     $("#workBadge").textContent = m.threads != null ? m.threads : "";
-    $("#usageBadge").textContent = m.cost ? fmtCost(m.cost) : "";
+    $("#usageBadge").textContent = m.tokens ? fmtTokens(m.tokens) : "";
     $("#looseFoot").innerHTML = m.loose
       ? `<span class="n">${m.loose}</span> loose end${m.loose===1?"":"s"} open`
       : `no loose ends`;

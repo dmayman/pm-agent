@@ -62,14 +62,15 @@ function api(db, repo, url) {
   const p = url.pathname;
 
   if (p === "/api/meta") {
-    const u = S.usageTotals(db, repo.id);
+    const u = S.usageTotals(db, repo.id) || {};
     return {
       repo: repo.slug,
       root: repo.root,
       capture: S.effectiveConfig(db, repo.slug, "capture", "observer"),
       threads: S.listThreads(db, repo.id).length,
       loose: S.listLooseEnds(db, repo.id).length,
-      cost: u ? u.cost : 0,
+      cost: u.cost || 0,
+      tokens: (u.input || 0) + (u.output || 0) + (u.cache_read || 0) + (u.cache_creation || 0),
     };
   }
   if (p === "/api/timeline") {
