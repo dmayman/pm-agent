@@ -172,6 +172,7 @@ export function openDb() {
   ensureColumn(db, "issue_titles", "branch", "TEXT"); // an open branch for this issue, if any
   ensureColumn(db, "issue_titles", "status", "TEXT"); // todo | in_progress | done
   ensureColumn(db, "issue_titles", "thread_id", "INTEGER"); // initiative this issue belongs to
+  ensureColumn(db, "issue_titles", "pinned", "INTEGER DEFAULT 0"); // 1 = membership set by hand, don't auto-recluster
   _db = db;
   return db;
 }
@@ -460,6 +461,38 @@ export function issuesForThread(db, threadId) {
   return db
     .prepare("SELECT * FROM issue_titles WHERE thread_id = ? ORDER BY number DESC")
     .all(threadId);
+}
+
+// --- Manual initiative membership (pins) -----------------------------------
+// A pin is a hand-made "this issue belongs to this initiative" that the auto-clusterer
+// must respect. Ensures the issue row exists first, so you can pin an issue the ledger
+// hasn't synced from GitHub yet (its title backfills on the next sync).
+export function pinIssueToThread(db, repoId, number, threadId) {
+  db.prepare("INSERT OR IGNORE INTO issue_titles (repo_id, number, title) VALUES (?, ?, ?)").run(
+    repoId,
+    Number(number),
+    `#${number}`
+  );
+  db.prepare(
+    "UPDATE issue_titles SET thread_id = ?, pinned = 1 WHERE repo_id = ? AND number = ?"
+  ).run(threadId, repoId, Number(number));
+}
+
+// Release a pin so the next recluster is free to re-home the issue. Leaves current
+// membership in place until then.
+export function unpinIssue(db, repoId, number) {
+  db.prepare("UPDATE issue_titles SET pinned = 0 WHERE repo_id = ? AND number = ?").run(
+    repoId,
+    Number(number)
+  );
+}
+
+// Threads with their issues attached — the shape the `initiative list` command and the
+// operator UI want. Newest-active first (inherits listThreads' ordering).
+export function initiativesWithIssues(db, repoId) {
+  const threads = listThreads(db, repoId);
+  for (const t of threads) t.issues = issuesForThread(db, t.id);
+  return threads;
 }
 
 export function getConfig(db, scope, key, fallback = null) {

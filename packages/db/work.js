@@ -137,47 +137,111 @@ export function refreshLifecycle(db, repo) {
 
 // Cluster issues into initiatives with Haiku, then rebuild threads so each thread is one
 // initiative (root idea) and its issues' commit/PR events hang under it.
-export async function clusterIntoInitiatives(db, repo) {
-  const issues = S.listIssues(db, repo.id).filter((i) => i.title);
-  if (!issues.length) return 0;
+//
+// Pins are honored: an issue whose membership was set by hand (pinned = 1) is never moved
+// or re-asked about — its initiative and thread survive verbatim, and Haiku is only asked
+// to group the *unpinned* remainder (told about the pinned initiatives so it can extend
+// them rather than duplicate them). `guidance` steers the grouping; when omitted it falls
+// back to the repo's stored cluster.guidance rubric.
+export async function clusterIntoInitiatives(db, repo, { guidance } = {}) {
+  if (guidance == null) guidance = S.effectiveConfig(db, repo.slug, "cluster.guidance", null);
 
-  const list = issues.map((i) => `#${i.number} ${i.title}`).join("\n");
-  const prompt =
-    `Below is a list of GitHub issues from one project. Group them into "initiatives" — a ` +
-    `small number of higher-level root ideas or feature arcs that several issues share (e.g. ` +
-    `"data ingest pipeline", "the plan model", "coach behavior"). Every issue goes in exactly ` +
-    `one initiative. Aim for a handful of meaningful groups, not one giant bucket and not one ` +
-    `per issue. Give each initiative a short, human name (not an issue title).\n\n` +
-    `Issues:\n${list}\n\n` +
-    `Return ONLY a JSON array: [{"initiative":"<name>","issues":[<numbers>]}]`;
+  const all = S.listIssues(db, repo.id).filter((i) => i.title);
+  if (!all.length) return 0;
 
-  const out = runHaiku(prompt, repo.root, { timeout: 90000, meter: { db, repoId: repo.id, kind: "cluster" } });
-  if (!out) return 0;
-  let groups;
-  try {
-    const s = out.indexOf("[");
-    const e = out.lastIndexOf("]");
-    groups = JSON.parse(out.slice(s, e + 1));
-  } catch {
-    return 0;
+  const pinned = all.filter((i) => i.pinned && i.thread_id);
+  const unpinned = all.filter((i) => !(i.pinned && i.thread_id));
+
+  // The locked initiatives the pinned issues define — seed the name→thread map and show
+  // them to Haiku as groups it may extend.
+  const pinnedByThread = new Map();
+  for (const i of pinned) {
+    if (!pinnedByThread.has(i.thread_id)) pinnedByThread.set(i.thread_id, []);
+    pinnedByThread.get(i.thread_id).push(i);
   }
-  if (!Array.isArray(groups) || !groups.length) return 0;
+  const locked = [...pinnedByThread.entries()]
+    .map(([threadId, issues]) => {
+      const t = S.getThread(db, threadId);
+      return t ? { threadId, name: t.title, issues } : null;
+    })
+    .filter(Boolean);
 
-  // Rebuild: detach everything, create initiative threads, reattach issues + their events.
-  db.exec("BEGIN");
-  try {
-    db.prepare("UPDATE issue_titles SET thread_id = NULL WHERE repo_id = ?").run(repo.id);
-    db.prepare("UPDATE events SET thread_id = NULL WHERE repo_id = ?").run(repo.id);
-    for (const g of groups) {
-      if (!g || !g.initiative || !Array.isArray(g.issues) || !g.issues.length) continue;
-      const threadId = S.createThread(db, repo.id, { title: String(g.initiative) });
-      for (const num of g.issues) {
-        S.setIssueFields(db, repo.id, Number(num), { thread_id: threadId });
-        db.prepare(
-          "UPDATE events SET thread_id = ? WHERE repo_id = ? AND json_extract(refs, '$.issue') = ?"
-        ).run(threadId, repo.id, Number(num));
+  let groups = [];
+  if (unpinned.length) {
+    const list = unpinned.map((i) => `#${i.number} ${i.title}`).join("\n");
+    const lockedBlock = locked.length
+      ? `These initiatives already exist and are locked. Use the EXACT same name when an ` +
+        `issue below clearly belongs to one; otherwise make new initiatives:\n` +
+        locked.map((l) => `- ${l.name}: ${l.issues.map((i) => "#" + i.number).join(", ")}`).join("\n") +
+        `\n\n`
+      : "";
+    const guide = guidance ? `Grouping guidance from the user — follow it: ${guidance}\n\n` : "";
+    const prompt =
+      `Below is a list of GitHub issues from one project. Group them into "initiatives" — a ` +
+      `small number of higher-level root ideas or feature arcs that several issues share (e.g. ` +
+      `"data ingest pipeline", "the plan model", "coach behavior"). Every issue goes in exactly ` +
+      `one initiative. Aim for a handful of meaningful groups, not one giant bucket and not one ` +
+      `per issue. Give each initiative a short, human name (not an issue title).\n\n` +
+      guide +
+      lockedBlock +
+      `Issues to group:\n${list}\n\n` +
+      `Return ONLY a JSON array: [{"initiative":"<name>","issues":[<numbers>]}]`;
+
+    const out = runHaiku(prompt, repo.root, {
+      timeout: 90000,
+      meter: { db, repoId: repo.id, kind: "cluster" },
+    });
+    if (out) {
+      try {
+        const s = out.indexOf("[");
+        const e = out.lastIndexOf("]");
+        const parsed = JSON.parse(out.slice(s, e + 1));
+        if (Array.isArray(parsed)) groups = parsed;
+      } catch {
+        groups = [];
       }
     }
+    // Nothing usable came back and there are no pins to preserve — leave threads as-is.
+    if (!groups.length && !locked.length) return 0;
+  }
+
+  // Rebuild: detach only the UNPINNED issues (pins keep their thread), then slot the
+  // clustered groups onto threads, reusing locked threads by name.
+  const byName = new Map(locked.map((l) => [l.name, l.threadId]));
+  db.exec("BEGIN");
+  try {
+    db.prepare(
+      "UPDATE issue_titles SET thread_id = NULL WHERE repo_id = ? AND (pinned = 0 OR pinned IS NULL)"
+    ).run(repo.id);
+
+    for (const g of groups) {
+      if (!g || !g.initiative || !Array.isArray(g.issues) || !g.issues.length) continue;
+      const name = String(g.initiative);
+      let threadId = byName.get(name);
+      if (!threadId) {
+        const existing = S.findThreadByTitle(db, repo.id, name);
+        threadId = existing ? existing.id : S.createThread(db, repo.id, { title: name });
+        byName.set(name, threadId);
+      }
+      for (const num of g.issues) {
+        const row = db
+          .prepare("SELECT pinned FROM issue_titles WHERE repo_id = ? AND number = ?")
+          .get(repo.id, Number(num));
+        if (row && row.pinned) continue; // never override a pin, even if Haiku names it
+        S.setIssueFields(db, repo.id, Number(num), { thread_id: threadId });
+      }
+    }
+
+    // Reattach every issue-tagged event to whatever thread its issue now lives on.
+    db.prepare("UPDATE events SET thread_id = NULL WHERE repo_id = ?").run(repo.id);
+    db.prepare(
+      `UPDATE events SET thread_id = (
+         SELECT it.thread_id FROM issue_titles it
+          WHERE it.repo_id = events.repo_id
+            AND it.number = json_extract(events.refs, '$.issue'))
+       WHERE repo_id = ? AND json_extract(refs, '$.issue') IS NOT NULL`
+    ).run(repo.id);
+
     // Drop threads that ended up with no issues and no events (the old per-issue buckets).
     db.prepare(
       `DELETE FROM threads WHERE repo_id = ?
@@ -189,7 +253,7 @@ export async function clusterIntoInitiatives(db, repo) {
     db.exec("ROLLBACK");
     throw e;
   }
-  return groups.length;
+  return byName.size;
 }
 
 // Roll up a thread's issue lifecycle into a status summary for the UI.
