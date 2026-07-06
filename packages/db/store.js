@@ -150,6 +150,14 @@ export function openDb() {
   // Migrations for DBs created before these columns existed.
   ensureColumn(db, "threads", "summary", "TEXT"); // Haiku-synthesized plain-language what/why
   ensureColumn(db, "threads", "summary_event_count", "INTEGER"); // staleness marker
+  // issue_titles started life as just number→title; it's now the issues table with
+  // lifecycle + thread membership. Grow it in place.
+  ensureColumn(db, "issue_titles", "state", "TEXT"); // OPEN | CLOSED (from gh)
+  ensureColumn(db, "issue_titles", "opened_at", "TEXT");
+  ensureColumn(db, "issue_titles", "closed_at", "TEXT");
+  ensureColumn(db, "issue_titles", "branch", "TEXT"); // an open branch for this issue, if any
+  ensureColumn(db, "issue_titles", "status", "TEXT"); // todo | in_progress | done
+  ensureColumn(db, "issue_titles", "thread_id", "INTEGER"); // initiative this issue belongs to
   _db = db;
   return db;
 }
@@ -373,6 +381,48 @@ export function issueGlossary(db, repoId, limit = 50) {
   return db
     .prepare("SELECT number, title FROM issue_titles WHERE repo_id = ? ORDER BY number DESC LIMIT ?")
     .all(repoId, limit);
+}
+
+// --- Issue lifecycle -------------------------------------------------------
+
+// Upsert an issue's identity + state (title/state/dates from gh). Leaves branch/status/
+// thread_id untouched so derived fields survive re-syncs.
+export function upsertIssue(db, repoId, { number, title, state = null, opened_at = null, closed_at = null }) {
+  db.prepare(
+    `INSERT INTO issue_titles (repo_id, number, title, state, opened_at, closed_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(repo_id, number) DO UPDATE SET
+       title = excluded.title,
+       state = COALESCE(excluded.state, issue_titles.state),
+       opened_at = COALESCE(excluded.opened_at, issue_titles.opened_at),
+       closed_at = COALESCE(excluded.closed_at, issue_titles.closed_at)`
+  ).run(repoId, Number(number), title, state, opened_at, closed_at);
+}
+
+export function setIssueFields(db, repoId, number, fields) {
+  const cols = [];
+  const vals = [];
+  for (const k of ["branch", "status", "thread_id"]) {
+    if (k in fields) {
+      cols.push(`${k} = ?`);
+      vals.push(fields[k]);
+    }
+  }
+  if (!cols.length) return;
+  vals.push(repoId, Number(number));
+  db.prepare(`UPDATE issue_titles SET ${cols.join(", ")} WHERE repo_id = ? AND number = ?`).run(...vals);
+}
+
+export function listIssues(db, repoId) {
+  return db
+    .prepare("SELECT * FROM issue_titles WHERE repo_id = ? ORDER BY number DESC")
+    .all(repoId);
+}
+
+export function issuesForThread(db, threadId) {
+  return db
+    .prepare("SELECT * FROM issue_titles WHERE thread_id = ? ORDER BY number DESC")
+    .all(threadId);
 }
 
 export function getConfig(db, scope, key, fallback = null) {

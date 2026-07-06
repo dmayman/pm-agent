@@ -8,6 +8,7 @@ import { readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import * as S from "../../packages/db/store.js";
+import { threadWorkStatus } from "../../packages/db/work.js";
 
 const WEB_DIR = fileURLToPath(new URL("../web/", import.meta.url));
 
@@ -85,20 +86,32 @@ function api(db, repo, url) {
   }
   if (p === "/api/inflight") {
     return {
-      threads: S.listThreads(db, repo.id).filter((t) => t.status !== "done"),
+      threads: S.listThreads(db, repo.id)
+        .filter((t) => t.status !== "done")
+        .map((t) => withWork(db, t)),
       loose: S.listLooseEnds(db, repo.id).map(decodeRefs),
     };
   }
   if (p === "/api/loose") return S.listLooseEnds(db, repo.id).map(decodeRefs);
-  if (p === "/api/threads") return S.listThreads(db, repo.id);
+  if (p === "/api/threads") return S.listThreads(db, repo.id).map((t) => withWork(db, t));
   const m = p.match(/^\/api\/thread\/(\d+)$/);
   if (m) {
     const id = Number(m[1]);
     const thread = S.getThread(db, id);
     if (!thread || thread.repo_id !== repo.id) return { __status: 404, error: "no such thread" };
-    return { thread, events: S.listEvents(db, repo.id, { threadId: id, limit: 1000 }).map(decodeRefs) };
+    return {
+      thread: withWork(db, thread),
+      issues: S.issuesForThread(db, id),
+      events: S.listEvents(db, repo.id, { threadId: id, limit: 1000 }).map(decodeRefs),
+    };
   }
   return { __status: 404, error: "unknown endpoint" };
+}
+
+// Attach the issue-lifecycle rollup (done/in-progress/todo counts + unfinished list) so the
+// UI can lead with "what's finished vs still open" instead of raw commits.
+function withWork(db, thread) {
+  return { ...thread, work: threadWorkStatus(db, thread.id) };
 }
 
 function decodeRefs(e) {

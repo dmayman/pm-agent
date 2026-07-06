@@ -355,27 +355,46 @@ async function cmdEnable(argv) {
       `# pm-agent ledger\n\nThis repo's work is tracked in the pm-agent ledger (a global timeline\nClaude maintains silently). This marker opts the repo in; delete it or run\n\`pm-agent disable\` to opt out. Capture mode: \`pm-agent config capture\`.\n\nView the timeline: \`pm-agent timeline\` or \`pm-agent serve\`.\n`
     );
   }
-  const { ingest } = await import("./ingest.js");
-  const res = ingest(db, repo);
-  process.stdout.write(
-    `${bold("pm-agent ledger enabled")} for ${repo.slug}\n` +
-      `  capture mode: ${mode}\n` +
-      (res.ghAvailable ? `  synced ${res.glossary ?? 0} issue titles for the #-glossary\n` : "") +
-      `  backfilled ${res.commits ?? 0} commits, ${res.merged ?? 0} merged-PR milestones\n`
-  );
+  process.stdout.write(`${bold("pm-agent ledger enabled")} for ${repo.slug} (capture: ${mode})\n`);
+  const { runFullIngest } = await import("./ingest.js");
+  const phaseLabel = {
+    issues: "syncing issues + state",
+    commits: "backfilling commit history",
+    prs: "recording merged PRs",
+    lifecycle: "detecting unfinished branches",
+    cluster: "grouping into initiatives (Haiku)",
+  };
+  const res = await runFullIngest(db, repo, {
+    onPhase: (p) => process.stdout.write(dim(`  · ${phaseLabel[p] || p}…\n`)),
+  });
+  if (res.ghAvailable) {
+    process.stdout.write(
+      dim(`  ${res.issues} issues, ${res.commits} commits, ${res.branches} unfinished → ${res.initiatives} initiatives\n`)
+    );
+  } else {
+    process.stdout.write(dim(`  backfilled ${res.commits} commits (gh unavailable — no issue lifecycle)\n`));
+  }
   if (!flags["no-synth"]) {
-    process.stdout.write(`  synthesizing thread summaries (Haiku)…\n`);
+    process.stdout.write(dim(`  · synthesizing summaries (Haiku)…\n`));
     const { synthesizeAll } = await import("./synthesize.js");
-    const n = await synthesizeAll(db, repo, {
-      staleOnly: true,
-      onProgress: (t) => process.stdout.write(dim(`    · ${t.title.slice(0, 66)}\n`)),
-    });
+    const n = await synthesizeAll(db, repo, { staleOnly: true });
     process.stdout.write(dim(`  ${n} thread summaries written\n`));
   }
   process.stdout.write(
-    `\n  view it:  ${dim("pm-agent serve")}  ·  ${dim("pm-agent timeline")}\n` +
-      `  Restart Claude Code so the session hooks pick this up.\n`
+    `\n  view it:  ${dim("pm-agent serve")}\n  Restart Claude Code so the session hooks pick this up.\n`
   );
+}
+
+async function cmdRecluster() {
+  const db = S.openDb();
+  const repo = requireRepo(db);
+  process.stdout.write(dim("re-grouping issues into initiatives (Haiku)…\n"));
+  const { runFullIngest } = await import("./ingest.js");
+  const res = await runFullIngest(db, repo, {});
+  process.stdout.write(dim(`  ${res.initiatives} initiatives, ${res.branches} unfinished branches\n`));
+  const { synthesizeAll } = await import("./synthesize.js");
+  const n = await synthesizeAll(db, repo, { staleOnly: false });
+  process.stdout.write(dim(`  ${n} thread summaries re-synthesized\n`));
 }
 
 async function cmdDisable() {
@@ -469,6 +488,8 @@ export async function runLedger(cmd, argv) {
       return cmdIngest(argv);
     case "synthesize":
       return cmdSynthesize(argv);
+    case "recluster":
+      return cmdRecluster(argv);
     case "enable":
       return cmdEnable(argv);
     case "disable":

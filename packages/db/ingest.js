@@ -197,3 +197,30 @@ export function ingest(db, repo, opts = {}) {
     ghAvailable: glossary !== null || merged !== null,
   };
 }
+
+// The full pipeline: identity + lifecycle + backfill + semantic grouping. This is what
+// `enable`, `ingest`, and `recluster` build on. onPhase(name) reports progress.
+export async function runFullIngest(db, repo, { onPhase = () => {} } = {}) {
+  const { syncIssues, syncOpenBranches, computeStatuses, clusterIntoInitiatives } = await import(
+    "./work.js"
+  );
+  onPhase("issues");
+  const issues = syncIssues(db, repo); // identity + open/closed state
+  onPhase("commits");
+  const cb = backfillCommits(db, repo, {}); // the raw history (fallback threading by issue)
+  onPhase("prs");
+  const merged = syncMergedPRs(db, repo, { skipPRs: cb.prNumbers });
+  onPhase("lifecycle");
+  const branches = syncOpenBranches(db, repo); // unfinished branches
+  computeStatuses(db, repo); // todo | in_progress | done
+  onPhase("cluster");
+  const initiatives = await clusterIntoInitiatives(db, repo); // regroup into root ideas
+  return {
+    issues,
+    commits: cb.count,
+    merged,
+    branches,
+    initiatives,
+    ghAvailable: issues !== null,
+  };
+}
