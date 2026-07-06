@@ -49,6 +49,31 @@ const esc = (s) => String(s == null ? "" : s)
 // safe), then turn the surviving ** markers into <strong>. Nothing else is interpreted.
 const fmtSummary = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 
+// Split a summary into its leading **headline** (reads as a title) and the rest of the
+// paragraph (a notch down in the hierarchy). No leading bold -> the whole thing is body.
+function splitSummary(s){
+  s = String(s == null ? "" : s).trim();
+  const m = /^\*\*([\s\S]+?)\*\*\s*([\s\S]*)$/.exec(s);
+  if(m) return { head: m[1].trim(), rest: m[2].trim() };
+  return { head: null, rest: s };
+}
+
+// GitHub deep-links for refs. Base is the repo slug from /api/meta (owner/name); when it's
+// missing we degrade to plain text rather than a broken link.
+function ghBase(){
+  const repo = state.meta && state.meta.repo;
+  return repo ? "https://github.com/" + repo : null;
+}
+function ghUrl(kind, val){
+  const base = ghBase();
+  if(!base || val == null || val === "") return null;
+  if(kind === "issue")  return base + "/issues/" + encodeURIComponent(val);
+  if(kind === "pr")     return base + "/pull/" + encodeURIComponent(val);
+  if(kind === "branch") return base + "/tree/" + String(val).split("/").map(encodeURIComponent).join("/");
+  if(kind === "commit") return base + "/commit/" + encodeURIComponent(val);
+  return null;
+}
+
 async function api(path){
   const r = await fetch(path, { headers:{ accept:"application/json" } });
   if(!r.ok) throw new Error(path + " -> " + r.status);
@@ -108,13 +133,20 @@ function relAge(iso){
   return Math.round(d/7) + "w";
 }
 
+// A ref chip links to GitHub when we know the repo, else it's plain text.
+function refChip(kind, cls, inner, val){
+  const url = ghUrl(kind, val);
+  return url
+    ? `<a class="ref ${cls}" href="${esc(url)}" target="_blank" rel="noopener">${inner}</a>`
+    : `<span class="ref ${cls}">${inner}</span>`;
+}
 function refChips(refs){
   if(!refs || typeof refs !== "object") return "";
   const out = [];
-  if(refs.issue != null) out.push(`<span class="ref issue"><span class="k">#</span>${esc(refs.issue)}</span>`);
-  if(refs.pr != null)    out.push(`<span class="ref pr"><span class="k">PR</span>${esc(refs.pr)}</span>`);
-  if(refs.branch)        out.push(`<span class="ref branch"><span class="k">⎇</span>${esc(refs.branch)}</span>`);
-  if(refs.commit)        out.push(`<span class="ref commit">${esc(String(refs.commit).slice(0,7))}</span>`);
+  if(refs.issue != null) out.push(refChip("issue", "issue", `<span class="k">#</span>${esc(refs.issue)}`, refs.issue));
+  if(refs.pr != null)    out.push(refChip("pr", "pr", `<span class="k">PR</span>${esc(refs.pr)}`, refs.pr));
+  if(refs.branch)        out.push(refChip("branch", "branch", `<span class="k">⎇</span>${esc(refs.branch)}`, refs.branch));
+  if(refs.commit)        out.push(refChip("commit", "commit", `${esc(String(refs.commit).slice(0,7))}`, refs.commit));
   return out.join("");
 }
 
@@ -359,19 +391,28 @@ function lifecycleIndicator(w){
 function issueRow(iss){
   const lm = lifeMeta(iss.status);
   const unf = isUnfinished(iss.status);
+  const numUrl = ghUrl("issue", iss.number);
+  const num = numUrl
+    ? `<a class="issue-num" href="${esc(numUrl)}" target="_blank" rel="noopener">#${esc(iss.number)}</a>`
+    : `<span class="issue-num">#${esc(iss.number)}</span>`;
+  const brUrl = iss.branch ? ghUrl("branch", iss.branch) : null;
+  const branch = !iss.branch ? ""
+    : brUrl
+    ? `<a class="issue-branch" href="${esc(brUrl)}" target="_blank" rel="noopener"><span class="k">⎇</span>${esc(iss.branch)}</a>`
+    : `<span class="issue-branch"><span class="k">⎇</span>${esc(iss.branch)}</span>`;
   return `<div class="issue-row ${unf ? "unfin" : ""}" style="--pc:${lm.pc}">`
     + `<span class="issue-pill"><span class="ip-dot"></span>${esc(lm.label)}</span>`
-    + `<span class="issue-num">#${esc(iss.number)}</span>`
+    + num
     + `<span class="issue-title">${esc(iss.title)}</span>`
-    + (iss.branch ? `<span class="issue-branch"><span class="k">⎇</span>${esc(iss.branch)}</span>` : "")
+    + branch
     + `</div>`;
 }
 
 // the body of an expanded thread: issues (lifecycle) first, commits demoted
 function expanderBody(id){
-  const d = state.threadCache.get(String(id));
-  if(!d) return `<div class="exp-loading">reading initiative…</div>`;
   const openLink = `<a class="exp-open" href="#/thread/${esc(id)}">Open initiative<span class="arw"> →</span></a>`;
+  const d = state.threadCache.get(String(id));
+  if(!d) return openLink + `<div class="exp-loading">reading initiative…</div>`;
   const issues = (d.issues || []).slice()
     .sort((a, b) => (isUnfinished(b.status) - isUnfinished(a.status))
       || (b.number - a.number));
@@ -387,18 +428,27 @@ function expanderBody(id){
       + `<div class="commits-list" id="${evId}" hidden>${events.map(evidenceRow).join("")}</div>`
       + `</div>`
     : "";
-  return issuesHtml + commits + openLink;
+  // the open-initiative affordance floats to the card's top-right (positioned by CSS)
+  return openLink + issuesHtml + commits;
 }
 
 // a thread as a primary row (used in both Days and Threads modes)
 function threadRow(th, key, i){
   const w = th.work || emptyWork;
   const open = state.expanded.has(key);
-  const hero = th.summary
-    ? `<p class="tr-summary">${fmtSummary(th.summary)}</p>`
-    : th.genesis
-    ? `<p class="tr-summary is-genesis">${esc(th.genesis)}</p>`
-    : `<p class="tr-summary none">Backlog initiative — ${w.total || 0} issue${w.total === 1 ? "" : "s"}, no summary yet.</p>`;
+  // Hierarchy: the **headline** reads as the title; the rest of the paragraph sits below,
+  // a notch down. No summary -> genesis or a plain backlog line as the body.
+  let hero;
+  if(th.summary){
+    const { head, rest } = splitSummary(th.summary);
+    hero = (head ? `<p class="tr-head">${esc(head)}</p>` : "")
+      + (rest ? `<p class="tr-rest">${esc(rest)}</p>` : "")
+      + (!head && !rest ? `<p class="tr-rest">${esc(th.summary)}</p>` : "");
+  } else if(th.genesis){
+    hero = `<p class="tr-rest is-genesis">${esc(th.genesis)}</p>`;
+  } else {
+    hero = `<p class="tr-rest none">Backlog initiative — ${w.total || 0} issue${w.total === 1 ? "" : "s"}, no summary yet.</p>`;
+  }
   return `<article class="trow ${open ? "open" : ""}" data-href="#/thread/${esc(th.id)}" `
     + `style="--d:${Math.min(i, 12) * 26}ms">`
     + `<button class="trow-head" data-key="${esc(key)}" data-id="${esc(th.id)}" aria-expanded="${open}">`
@@ -470,7 +520,8 @@ async function renderWork(force){
 
   const byId = new Map(threads.map((t) => [t.id, t]));
   let html = "";
-  if(!unfilter) html += unfinishedPanel(unfinishedItems);
+  // only surface the unfinished panel when something is actually dangling — no zero-state
+  if(!unfilter && unfinishedItems.length) html += unfinishedPanel(unfinishedItems);
 
   if(state.workMode === "events"){
     // flat chronological ledger — the "what happened when" lens
@@ -508,7 +559,9 @@ async function renderWork(force){
       if(unfilter) entries = entries.filter((t) => unfinishedThreadIds.has(t.id));
       const rows = entries.map((t) => threadRow(t, g.key + ":" + t.id, idx++)).join("");
       const loose = (!unfilter && g.loose.length)
-        ? `<div class="day-loose">${g.loose.map(evidenceRow).join("")}</div>` : "";
+        ? `<div class="day-loose"><div class="day-loose-head">Not tied to an initiative</div>`
+          + `${g.loose.map(evidenceRow).join("")}</div>`
+        : "";
       if(!rows && !loose) return "";
       const dl = dayLabel(g.when);
       return `<div class="day-group"><div class="day-head">`

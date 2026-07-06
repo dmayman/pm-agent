@@ -227,21 +227,32 @@ body::after{
   animation:rise .5s cubic-bezier(.2,.7,.2,1) both; animation-delay:var(--d,0ms); }
 .trow:hover{ border-color:var(--line-strong); }
 .trow.open{ background:var(--bg-2); border-color:var(--line-strong); }
+/* Days mode stacks initiatives directly under a day — give them breathing room.
+   (Threads mode wraps them in .wlist, which supplies its own gap.) */
+.day-group > .trow{ margin-bottom:12px; }
 .trow-head{ display:grid; grid-template-columns:22px 1fr; gap:4px; width:100%;
   text-align:left; padding:17px 20px; background:none; border:none; cursor:pointer;
   color:inherit; font:inherit; }
-.trow-head .chev{ margin-top:3px; font-size:15px; line-height:1; color:var(--ink-whisper);
-  transition:transform .2s ease; }
+/* inline-block + fixed box + centered origin so the glyph pivots in place instead of
+   drifting; align-self:start keeps it pinned to the kicker line in the tall grid cell */
+.trow-head .chev{ display:inline-block; align-self:start; width:15px; height:15px;
+  text-align:center; line-height:15px; transform-origin:50% 50%;
+  margin-top:3px; font-size:15px; color:var(--ink-whisper);
+  transition:transform .2s ease, color .2s ease; }
 .trow-head[aria-expanded="true"] .chev{ transform:rotate(90deg); color:var(--ink-mute); }
 .trow-body{ min-width:0; }
-/* title is secondary (technical); summary is the hero */
-.trow-title{ display:block; font-family:var(--mono); font-size:11.5px; letter-spacing:-0.1px;
-  color:var(--ink-mute); line-height:1.4; margin-bottom:6px; }
-.tr-summary{ margin:0; font-size:15.5px; line-height:1.55; letter-spacing:-0.1px; color:var(--ink-dim); }
-.tr-summary.is-genesis{ color:var(--ink-dim); font-size:14px; }
-.tr-summary.none{ color:var(--ink-whisper); font-style:italic; font-size:13.5px; }
-/* summaries lead with a bold headline sentence — brighten + weight it so it reads as hierarchy */
-.tr-summary strong, .th-summary strong, .card-summary strong{ color:var(--ink); font-weight:600; }
+/* hierarchy: name (kicker) -> headline (title) -> paragraph (body, a notch down) */
+.trow-title{ display:block; font-family:var(--mono); font-size:12px; letter-spacing:0.01em;
+  color:var(--ink-dim); line-height:1.4; margin-bottom:9px; }
+/* the leading headline sentence — the title of the initiative's story */
+.tr-head{ margin:0 0 8px; font-size:16.5px; font-weight:600; line-height:1.5;
+  letter-spacing:-0.15px; color:var(--ink); }
+/* the rest of the paragraph — supporting detail, dimmer and smaller */
+.tr-rest{ margin:0; font-size:14px; line-height:1.6; letter-spacing:-0.05px; color:var(--ink-dim); }
+.tr-rest.is-genesis{ color:var(--ink-dim); font-size:13.5px; }
+.tr-rest.none{ color:var(--ink-whisper); font-style:italic; font-size:13.5px; }
+/* other summaries still lead with a bold headline sentence — brighten + weight it */
+.th-summary strong, .card-summary strong{ color:var(--ink); font-weight:600; }
 
 .trow-detail{ padding:2px 20px 18px 46px; }
 .trow-detail[hidden]{ display:none; }
@@ -262,9 +273,13 @@ body::after{
 .issue-pill .ip-dot{ width:5px; height:5px; border-radius:50%; background:var(--pc); }
 .issue-row.unfin .issue-title{ color:var(--ink); }
 .issue-num{ font-family:var(--mono); font-size:11px; color:var(--ink-mute); }
+a.issue-num{ text-decoration:none; transition:color .16s; }
+a.issue-num:hover{ color:var(--ink); }
 .issue-title{ min-width:0; color:var(--ink-dim); font-size:13px; line-height:1.42; }
 .issue-branch{ font-family:var(--mono); font-size:10.5px; color:var(--t-followup); white-space:nowrap; }
 .issue-branch .k{ color:var(--ink-whisper); margin-right:3px; }
+a.issue-branch{ text-decoration:none; transition:color .16s; }
+a.issue-branch:hover{ color:var(--ink); }
 
 /* commits & merges — demoted, nested behind a further disclosure */
 .exp-commits{ margin-top:12px; padding-top:11px; border-top:1px solid var(--line); }
@@ -278,14 +293,21 @@ body::after{
 .commits-list{ margin-top:6px; display:flex; flex-direction:column; gap:1px; }
 .commits-list[hidden]{ display:none; }
 
-.exp-open{ display:inline-flex; align-items:center; margin-top:14px; font-family:var(--mono);
-  font-size:11px; color:var(--ink-mute); text-decoration:none; transition:color .16s; }
-.exp-open:hover{ color:var(--ink); }
+/* the open-initiative affordance — a stroke button pinned to the card's top-right corner */
+.exp-open{ position:absolute; top:15px; right:16px; z-index:3;
+  display:inline-flex; align-items:center; gap:5px; padding:6px 12px; border-radius:8px;
+  border:1px solid var(--line-strong); background:var(--bg-1);
+  font-family:var(--mono); font-size:11px; color:var(--ink-dim); text-decoration:none;
+  transition:background .16s, color .16s, border-color .16s; }
+.exp-open:hover{ background:var(--bg-hi); color:var(--ink); border-color:rgba(233,240,238,0.2); }
 .exp-open .arw{ transition:transform .16s; }
 .exp-open:hover .arw{ transform:translateX(2px); }
 
-/* unthreaded events that fell on a day, shown quietly beneath the initiatives */
-.day-loose{ padding:6px 0 6px 46px; display:flex; flex-direction:column; gap:1px; opacity:0.72; }
+/* unthreaded events that fell on a day — labelled so it's clear they belong to no initiative */
+.day-loose{ margin-top:10px; padding:13px 0 6px 46px; display:flex; flex-direction:column; gap:1px;
+  border-top:1px solid var(--line); }
+.day-loose-head{ font-family:var(--mono); font-size:9.5px; letter-spacing:0.14em;
+  text-transform:uppercase; color:var(--ink-mute); margin-bottom:9px; }
 
 /* in-flight card: unfinished badge */
 .unfin-badge{ flex:none; font-family:var(--mono); font-size:10px; letter-spacing:0.06em;
@@ -293,16 +315,18 @@ body::after{
   border-radius:20px; background:color-mix(in srgb, var(--t-blocked) 13%, transparent);
   border:1px solid color-mix(in srgb, var(--t-blocked) 32%, transparent); white-space:nowrap; }
 
-.ev-line{ display:flex; align-items:baseline; gap:11px; padding:4px 0; }
-.ev-time{ flex:none; width:52px; font-family:var(--mono); font-size:10.5px;
+/* align every column to the first text line (18px line-box) so the dot never drifts to the
+   vertical centre of a multi-line summary */
+.ev-line{ display:flex; align-items:flex-start; gap:11px; padding:4px 0; }
+.ev-time{ flex:none; width:52px; font-family:var(--mono); font-size:10.5px; line-height:18px;
   color:var(--ink-whisper); text-align:right; }
-.ev-dot{ flex:none; align-self:center; width:7px; height:7px; border-radius:50%;
+.ev-dot{ flex:none; width:7px; height:7px; border-radius:50%; margin-top:5.5px;
   background:var(--hue); }
 .ev-dot.hollow{ background:transparent; border:1.5px solid var(--hue); }
 .ev-type{ flex:none; width:62px; font-family:var(--mono); font-size:9.5px; font-weight:600;
-  letter-spacing:0.1em; text-transform:uppercase; color:var(--hue); }
-.ev-sum{ flex:1; min-width:0; color:var(--ink-dim); font-size:12.5px; line-height:1.45; }
-.ev-refs{ flex:none; display:flex; flex-wrap:wrap; gap:6px; }
+  line-height:18px; letter-spacing:0.1em; text-transform:uppercase; color:var(--hue); }
+.ev-sum{ flex:1; min-width:0; color:var(--ink-dim); font-size:12.5px; line-height:1.44; }
+.ev-refs{ flex:none; display:flex; flex-wrap:wrap; gap:6px; margin-top:1px; }
 .ev-refs .ref{ font-size:10px; }
 
 /* ---------- timeline ---------- */
@@ -331,7 +355,10 @@ body::after{
   position:sticky; top:var(--topbar-h); z-index:10;
   display:flex; align-items:baseline; gap:11px;
   padding:16px 0 12px; margin-bottom:2px;
-  background:linear-gradient(180deg, var(--bg) 62%, rgba(11,15,17,0));
+  /* translucent + blur (matching the topbar) so the ambient glow reads through instead of
+     the bar painting a flat, slightly-off patch over it */
+  background:linear-gradient(180deg, rgba(11,15,17,0.82) 58%, rgba(11,15,17,0));
+  backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
 }
 .day-head .d-label{ font-size:12px; font-weight:600; letter-spacing:0.06em;
   text-transform:uppercase; color:var(--ink-dim); }
@@ -390,6 +417,11 @@ body::after{
   border:1px solid var(--line); font-size:10.5px; }
 .ref .k{ color:var(--ink-whisper); margin-right:4px; }
 .ref.commit{ color:var(--ink-dim); }
+/* GitHub-linked refs get a hover affordance */
+a.ref{ text-decoration:none; cursor:pointer;
+  transition:color .16s, border-color .16s, background .16s; }
+a.ref:hover{ color:var(--ink); border-color:var(--line-strong); background:var(--bg-2); }
+a.ref:hover .k{ color:var(--ink-mute); }
 
 .event.is-new{ animation:rise .5s cubic-bezier(.2,.7,.2,1) both, flash 2s ease both; }
 @keyframes flash{
