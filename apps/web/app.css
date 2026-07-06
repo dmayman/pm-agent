@@ -237,9 +237,11 @@ body::after{
 /* title is secondary (technical); summary is the hero */
 .trow-title{ display:block; font-family:var(--mono); font-size:11.5px; letter-spacing:-0.1px;
   color:var(--ink-mute); line-height:1.4; margin-bottom:6px; }
-.tr-summary{ margin:0; font-size:15.5px; line-height:1.55; letter-spacing:-0.1px; color:var(--ink); }
+.tr-summary{ margin:0; font-size:15.5px; line-height:1.55; letter-spacing:-0.1px; color:var(--ink-dim); }
 .tr-summary.is-genesis{ color:var(--ink-dim); font-size:14px; }
 .tr-summary.none{ color:var(--ink-whisper); font-style:italic; font-size:13.5px; }
+/* summaries lead with a bold headline sentence — brighten + weight it so it reads as hierarchy */
+.tr-summary strong, .th-summary strong, .card-summary strong{ color:var(--ink); font-weight:600; }
 
 .trow-detail{ padding:2px 20px 18px 46px; }
 .trow-detail[hidden]{ display:none; }
@@ -314,7 +316,7 @@ body::after{
   color:var(--ink-dim); font-weight:500; }
 /* the synthesized story — the hero of the thread page */
 .th-summary{ margin:0 0 16px; font-size:18px; line-height:1.62; letter-spacing:-0.2px;
-  color:var(--ink); max-width:62ch; }
+  color:var(--ink-dim); max-width:62ch; }
 .th-summary.none{ color:var(--ink-whisper); font-style:italic; font-size:15px; }
 .th-genesis{ display:flex; gap:12px; color:var(--ink-dim); font-size:13px; line-height:1.6;
   padding-top:14px; border-top:1px solid var(--line); }

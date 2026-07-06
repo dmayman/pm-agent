@@ -45,6 +45,10 @@ const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
   .replace(/"/g,"&quot;");
 
+// Thread summaries lead with a **bold** headline sentence. Escape first (so the text is
+// safe), then turn the surviving ** markers into <strong>. Nothing else is interpreted.
+const fmtSummary = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+
 async function api(path){
   const r = await fetch(path, { headers:{ accept:"application/json" } });
   if(!r.ok) throw new Error(path + " -> " + r.status);
@@ -261,7 +265,7 @@ async function renderThread(force){
 
   const sm = statusMeta(th.status);
   const summary = th.summary
-    ? `<p class="th-summary">${esc(th.summary)}</p>`
+    ? `<p class="th-summary">${fmtSummary(th.summary)}</p>`
     : issues.length ? "" /* pure-backlog: the issue list carries the story */
     : `<p class="th-summary none">No synthesized summary yet — the story is still being distilled.</p>`;
   const genesis = th.genesis
@@ -372,7 +376,7 @@ function threadRow(th, key, i){
   const w = th.work || emptyWork;
   const open = state.expanded.has(key);
   const hero = th.summary
-    ? `<p class="tr-summary">${esc(th.summary)}</p>`
+    ? `<p class="tr-summary">${fmtSummary(th.summary)}</p>`
     : th.genesis
     ? `<p class="tr-summary is-genesis">${esc(th.genesis)}</p>`
     : `<p class="tr-summary none">Backlog initiative — ${w.total || 0} issue${w.total === 1 ? "" : "s"}, no summary yet.</p>`;
@@ -533,7 +537,7 @@ function threadCard(th, events, i){
   const unfin = (w.inProgress || 0) + (w.shipped || 0);
   const accent = unfin ? "var(--t-blocked)" : statusMeta(th.status).pc;
   const blurb = th.summary
-    ? `<div class="card-summary">${esc(th.summary)}</div>`
+    ? `<div class="card-summary">${fmtSummary(th.summary)}</div>`
     : th.genesis
     ? `<div class="card-genesis">${esc(th.genesis)}</div>`
     : `<div class="card-genesis none">backlog — ${w.total || 0} issue${w.total === 1 ? "" : "s"}</div>`;

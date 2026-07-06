@@ -38,39 +38,69 @@ function primaryIssue(events) {
   return nums.length ? Number(nums[0]) : null;
 }
 
-// Build the Haiku prompt + event count for a thread (the sync gather step). Returns null
-// when there's nothing to summarize.
+const STATUS_LABEL = {
+  done: "done",
+  shipped: "merged but issue still open",
+  in_progress: "in progress on a branch",
+  todo: "not started",
+};
+
+// Build the Haiku prompt + a freshness signal for a thread (the sync gather step). The
+// summary is a standing snapshot of the whole initiative — what happened AND what's next —
+// so it draws on both the issue roster (with lifecycle status) and the work log. Returns
+// null only when there's genuinely nothing to summarize (no issues and no events).
 function buildThreadPrompt(db, repo, threadId) {
   const thread = S.getThread(db, threadId);
   if (!thread) return null;
   const events = S.listEvents(db, repo.id, { threadId, limit: 100 }).slice().reverse(); // chronological
-  if (!events.length) return null;
+  const issues = S.issuesForThread(db, threadId);
+  if (!events.length && !issues.length) return null;
 
-  const issueNum = primaryIssue(events);
+  const issueNum = primaryIssue(events) || (issues[0] && issues[0].number) || null;
   const issue = issueNum ? ghIssue(repo.root, issueNum) : null;
-  const log = events.map((e) => `- ${e.type}: ${e.summary}`).join("\n");
   const context = issue
-    ? `The issue this work addresses:\nTitle: ${issue.title}\n${issue.body}\n\n`
+    ? `The issue at the heart of this work:\nTitle: ${issue.title}\n${issue.body}\n\n`
     : thread.genesis
       ? `Context: ${thread.genesis}\n\n`
       : "";
 
+  // The issue roster with lifecycle status is what lets the summary say what's still open /
+  // next; the work log carries what actually happened.
+  const roster = issues.length
+    ? `Issues in this initiative (status shows what's finished vs still open):\n` +
+      issues.map((i) => `- #${i.number} [${STATUS_LABEL[i.status] || i.status || "?"}] ${i.title}`).join("\n") +
+      `\n\n`
+    : "";
+  const log = events.length
+    ? `Work log (newest last):\n${events.map((e) => `- ${e.type}: ${e.summary}`).join("\n")}\n\n`
+    : "";
+
   const prompt =
-    `Write a summary of one line of development work for a developer skimming a timeline weeks later. ` +
-    `In 1-2 sentences of plain, human language, say WHAT this work accomplished and WHY it mattered — ` +
-    `the intent and the outcome, not the mechanics. Do not list the commits, name files, or use hashes; ` +
-    `synthesize the whole arc into its point. Write it so someone non-technical could follow.\n\n` +
+    `You are writing the standing summary for one initiative — a group of related issues — ` +
+    `that a developer will skim weeks later to remember where things stand. Tell the WHOLE ` +
+    `story: what has happened and what is still left or coming next.\n\n` +
+    `Write it in this exact shape:\n` +
+    `1. A first sentence that is the headline — what this initiative is and its current state — ` +
+    `wrapped in **double asterisks** so it renders bold.\n` +
+    `2. Then 1-3 more sentences of plain language: what has been accomplished so far, and — if any ` +
+    `issues above are not yet done — what's still open or next. If there is open or not-started ` +
+    `work, you MUST end by saying what's next.\n\n` +
+    `Rules: plain, human language a non-technical person could follow. No file names, no commit ` +
+    `hashes, don't enumerate commits — synthesize the arc into its point.\n\n` +
+    `Initiative: ${thread.title}\n\n` +
+    roster +
     context +
-    `Work log (newest last):\n${log}\n\n` +
-    `Return ONLY the summary sentence(s), no preamble, no quotes.`;
-  return { prompt, eventCount: events.length };
+    log +
+    `Return ONLY the summary, starting with the bold first sentence. No preamble, no surrounding quotes.`;
+  // Signal = events + issues, so adding an issue or logging work re-triggers synthesis.
+  return { prompt, signal: events.length + issues.length };
 }
 
-function storeSummary(db, threadId, out, eventCount) {
+function storeSummary(db, threadId, out, signal) {
   if (!out) return false;
   const summary = out.trim().replace(/^["']+|["']+$/g, "");
   if (!summary) return false;
-  S.setThreadSummary(db, threadId, summary, eventCount);
+  S.setThreadSummary(db, threadId, summary, signal);
   return true;
 }
 
@@ -78,7 +108,7 @@ function storeSummary(db, threadId, out, eventCount) {
 export function synthesizeThread(db, repo, threadId) {
   const built = buildThreadPrompt(db, repo, threadId);
   if (!built) return false;
-  return storeSummary(db, threadId, runHaiku(built.prompt, repo.root), built.eventCount);
+  return storeSummary(db, threadId, runHaiku(built.prompt, repo.root), built.signal);
 }
 
 // Synthesize threads that need it, running the Haiku calls concurrently. staleOnly skips
@@ -86,14 +116,16 @@ export function synthesizeThread(db, repo, threadId) {
 export async function synthesizeAll(db, repo, { staleOnly = true, onProgress = null, concurrency = 6 } = {}) {
   const targets = [];
   for (const t of S.listThreads(db, repo.id)) {
-    if (staleOnly && t.summary && t.summary_event_count === t.event_count) continue;
+    // Freshness signal = events + issues; re-synthesize when either changes.
+    const signal = (t.event_count || 0) + (t.issue_count || 0);
+    if (staleOnly && t.summary && t.summary_event_count === signal) continue;
     const built = buildThreadPrompt(db, repo, t.id);
     if (built) targets.push({ thread: t, ...built });
   }
   let n = 0;
   await pool(targets, concurrency, async (t) => {
     const out = await runHaikuAsync(t.prompt, repo.root);
-    if (storeSummary(db, t.thread.id, out, t.eventCount)) {
+    if (storeSummary(db, t.thread.id, out, t.signal)) {
       n++;
       if (onProgress) onProgress(t.thread, n);
     }

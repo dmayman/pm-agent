@@ -289,6 +289,7 @@ export function listThreads(db, repoId, { status = null } = {}) {
     .prepare(
       `SELECT t.*,
               (SELECT COUNT(*) FROM events e WHERE e.thread_id = t.id) AS event_count,
+              (SELECT COUNT(*) FROM issue_titles i WHERE i.thread_id = t.id) AS issue_count,
               (SELECT MAX(ts) FROM events e WHERE e.thread_id = t.id) AS last_event_ts
          FROM threads t
         WHERE repo_id = ? ${where}
