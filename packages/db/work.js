@@ -63,6 +63,16 @@ export function syncOpenBranches(db, repo) {
   for (const iss of S.listIssues(db, repo.id)) {
     if (iss.branch) S.setIssueFields(db, repo.id, iss.number, { branch: null });
   }
+  // GitHub knows a branch merged even when git ancestry doesn't: a squash-merge lands the
+  // branch's work as one NEW commit on main, so the branch's own commits are never ancestors
+  // and `git branch --no-merged` still lists it. Trust the merged-PR record to exclude those
+  // stale-but-merged branches (otherwise they masquerade as loose threads). See feat/48.
+  const mergedPrs = ghJson(
+    ["pr", "list", "--state", "merged", "--limit", "200", "--json", "headRefName"],
+    repo.root
+  );
+  const mergedBranches = new Set((mergedPrs || []).map((p) => p.headRefName));
+
   // Prefer origin's default branch as the merge base.
   const base =
     (sh("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], repo.root) || "")
@@ -76,6 +86,7 @@ export function syncOpenBranches(db, repo) {
     if (!line || line.includes("->") || line.endsWith("/HEAD")) continue;
     const short = line.replace(/^origin\//, "");
     if (short === "main" || short === "master") continue;
+    if (mergedBranches.has(short)) continue; // squash-merged: content is in main, not a loose end
     const issue = branchIssue(short);
     if (issue) {
       S.setIssueFields(db, repo.id, issue, { branch: short });
