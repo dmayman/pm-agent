@@ -87,6 +87,19 @@ async function api(path){
   return r.json();
 }
 
+// POST for the write endpoints (worktree create/checkout, dev-server start/stop, dev command).
+// Same-origin, so the server's guard passes; returns the parsed {ok,...} / {error} body.
+async function apiPost(path, body){
+  try{
+    const r = await fetch(withProject(path), {
+      method:"POST",
+      headers:{ "content-type":"application/json", accept:"application/json" },
+      body: JSON.stringify(body || {}),
+    });
+    return await r.json();
+  }catch(e){ return { ok:false, error:String(e && e.message) }; }
+}
+
 function pad2(n){ return n < 10 ? "0" + n : "" + n; }
 function fmtTime(d){ return pad2(d.getHours()) + ":" + pad2(d.getMinutes()); }
 
@@ -171,13 +184,16 @@ const state = {
   meta: null,
   project: null,           // slug of the repo currently being viewed
   projects: [],            // all repos in the ledger (for the switcher)
-  currentProject: null,    // slug of the repo the server runs in ("here")
   menuOpen: false,         // project switcher dropdown state
   seenEvents: new Set(),   // event ids we've already rendered (for new-flash)
   expanded: new Set(),     // "day:threadId" or "threadId" keys that are open
   threadCache: new Map(),  // id -> {thread, issues, events} (lazy, for expanders)
   primed: false,           // first render done -> flashing enabled
   sig: "",                 // last-rendered signature per view
+  // worktrees panel (right rail on Work)
+  wt: { menuBranch:null, editCmd:null, error:null, mergedOpen:false, busy:new Set() },
+  wtData: null,            // last /api/worktrees payload (for no-network repaints)
+  wtSig: "",               // last-rendered panel signature
 };
 
 const viewEl = $("#view");
@@ -223,10 +239,10 @@ async function onRoute(){
 // ---- data + render orchestration -------------------------------------------
 async function refresh(force){
   try{
-    if(state.view === "inflight")    await renderInflight(force);
-    else if(state.view === "thread") await renderThread(force);
-    else if(state.view === "usage")  await renderUsage(force);
-    else                             await renderWork(force);
+    if(state.view === "inflight")     await renderInflight(force);
+    else if(state.view === "thread")  await renderThread(force);
+    else if(state.view === "usage")   await renderUsage(force);
+    else                              await renderWork(force);
   }catch(err){
     if(!state.sig) viewEl.innerHTML = `<div class="empty"><div class="glyph"></div>`
       + `<div class="e-title">Couldn't reach the ledger</div>`
@@ -238,12 +254,13 @@ async function refresh(force){
    New events prepend at the top and push content down; we compensate so the
    viewport doesn't jump — unless the user is already at the very top, where
    we let new arrivals slide into view. */
-function paint(html, { scrollSafe } = {}){
-  if(!scrollSafe){ viewEl.innerHTML = html; return; }
+function paint(html, { scrollSafe, target } = {}){
+  const el = target || viewEl;
+  if(!scrollSafe){ el.innerHTML = html; return; }
   const nearTop = mainEl.scrollTop < 48;
   const prevTop = mainEl.scrollTop;
   const prevH = mainEl.scrollHeight;
-  viewEl.innerHTML = html;
+  el.innerHTML = html;
   if(!nearTop){
     const delta = mainEl.scrollHeight - prevH;
     if(delta > 0) mainEl.scrollTop = prevTop + delta;
@@ -517,7 +534,20 @@ function workControls(){
     + liveTag();
 }
 
+// The Work view is a two-column shell: the timeline on the left, the worktrees panel on the
+// right. Built once per entry so the panel keeps its own state (open menus, focus) across the
+// left column's 4s repaints.
+function ensureWorkShell(){
+  if($("#workCol")) return;
+  viewEl.innerHTML = `<div class="work-wrap"><div class="work-col" id="workCol"></div>`
+    + `<aside class="work-aside" id="workAside"></aside></div>`;
+  state.sig = ""; state.wtSig = "";
+}
+
 async function renderWork(force){
+  ensureWorkShell();
+  renderWorktreePanel(force); // right rail — independent, runs concurrently
+
   const [threads, timeline] = await Promise.all([
     api("/api/threads"),
     api("/api/timeline?days=3650&limit=500"),
@@ -592,7 +622,7 @@ async function renderWork(force){
 
   setTopbar(workControls());
   updateUnfinishedFoot(unfinishedItems.length);
-  paint(html, { scrollSafe: !force && state.workMode === "events" });
+  paint(html, { scrollSafe: !force && state.workMode === "events", target: $("#workCol") });
   state.sig = sig;
 }
 
@@ -671,6 +701,201 @@ async function renderInflight(force){
 
   paint(html);
   state.sig = sig;
+}
+
+// ---- worktrees panel (right rail on Work) ----------------------------------
+// A live, write-capable view of git worktrees + branches for the current repo: which branch
+// each worktree has checked out, each worktree's dev server (start/open/stop), and every local
+// branch (make a worktree from it, or move an existing worktree onto it). Merged branches with
+// no worktree collapse into a dropdown. Renders into #workAside beside the Work timeline.
+
+// ahead/behind chip vs the default branch — the "how far has this diverged" read
+function divergeChip(ab){
+  if(!ab || (!ab.ahead && !ab.behind)) return "";
+  const parts = [];
+  if(ab.ahead)  parts.push(`<span class="wt-ahead">↑${ab.ahead}</span>`);
+  if(ab.behind) parts.push(`<span class="wt-behind">↓${ab.behind}</span>`);
+  return `<span class="wt-diverge">${parts.join("")}</span>`;
+}
+
+// one worktree: branch it's on, here/main tags, and its dev-server controls
+function wtpItem(wt){
+  const w = state.wt;
+  const key = wt.path;
+  const busy = w.busy.has("srv:" + key);
+  const branch = wt.detached
+    ? `<span class="wtp-branch detached">detached HEAD</span>`
+    : `<span class="wtp-branch"><span class="k">⎇</span>${esc(wt.branch || "—")}</span>`;
+  const tags = wt.isCurrent ? `<span class="wtp-tag here">here</span>`
+    : wt.isMain ? `<span class="wtp-tag main">main tree</span>` : "";
+
+  let srv;
+  if(wt.serverState === "live" && wt.servers.length){
+    const s = wt.servers[0];
+    srv = `<div class="wtp-srv live">`
+      + `<a class="wtp-open" href="${esc(s.url)}" target="_blank" rel="noopener"><span class="wtp-dot"></span>localhost:${esc(s.port)}<span class="arw"> ↗</span></a>`
+      + `<button class="wtp-btn stop" data-act="stop" data-wt="${esc(key)}">stop</button></div>`;
+  } else if(wt.serverState === "starting"){
+    srv = `<div class="wtp-srv starting"><span class="wtp-spin"></span><span class="wtp-starting">starting…</span>`
+      + `<button class="wtp-btn stop" data-act="stop" data-wt="${esc(key)}">stop</button></div>`;
+  } else if(wt.devCommand){
+    srv = `<div class="wtp-srv"><button class="wtp-btn start" data-act="start" data-wt="${esc(key)}" ${busy ? "disabled" : ""}>▶ dev server</button>`
+      + `<button class="wtp-cmd" data-act="editcmd" data-wt="${esc(key)}" title="edit dev command"><code>${esc(wt.devCommand)}</code></button></div>`;
+  } else {
+    srv = `<div class="wtp-srv"><button class="wtp-btn ghost" data-act="editcmd" data-wt="${esc(key)}">set dev command…</button></div>`;
+  }
+
+  const editor = w.editCmd === key
+    ? `<div class="wtp-editor"><input type="text" class="wtp-input" id="wtpCmdInput" value="${esc(wt.devCommand || "")}" placeholder="e.g. npm run dev" spellcheck="false" autocomplete="off" />`
+      + `<button class="wtp-btn save" data-act="savecmd">save</button>`
+      + `<button class="wtp-btn ghost" data-act="canceledit">cancel</button></div>`
+    : "";
+
+  return `<div class="wtp-item ${wt.serverState === "live" ? "live" : ""}">`
+    + `<div class="wtp-row1">${branch}${divergeChip(wt.ahead)}<span class="sp"></span>${tags}</div>`
+    + `<div class="wtp-path" title="${esc(wt.path)}">${esc(wt.name)}</div>`
+    + srv + editor
+    + `</div>`;
+}
+
+// the target picker for "move a branch into an existing worktree"
+function wtpMoveMenu(branch){
+  const wts = (state.wtData && state.wtData.worktrees) || [];
+  const rows = wts.map((w) =>
+    `<button class="wtp-menu-opt" data-act="checkout" data-wt="${esc(w.path)}" data-branch="${esc(branch)}">`
+    + `<span class="wtp-menu-name">${esc(w.name)}</span>`
+    + `<span class="wtp-menu-cur">${esc(w.branch || "detached")}</span></button>`).join("");
+  return `<div class="wtp-menu">`
+    + `<div class="wtp-menu-head">switch which worktree to ⎇${esc(branch)}?</div>`
+    + (rows || `<span class="wtp-menu-empty">no worktrees</span>`) + `</div>`;
+}
+
+// one branch row: its checkout status, or actions to make/move a worktree onto it
+function wtpBranchRow(b){
+  const w = state.wt;
+  const nm = `<span class="wtp-bname"><span class="k">⎇</span>${esc(b.name)}`
+    + (b.isDefault ? `<span class="wtp-def">default</span>` : "") + `</span>`;
+  let action;
+  if(b.worktreePath){
+    const base = b.worktreePath.split("/").pop();
+    action = `<span class="wtp-inwt" title="checked out at ${esc(b.worktreePath)}"><span class="wtp-inwt-dot"></span>in ${esc(base)}</span>`;
+  } else {
+    const menuOpen = w.menuBranch === b.name;
+    action = `<span class="wtp-actions">`
+      + `<button class="wtp-mini" data-act="create" data-branch="${esc(b.name)}" title="create a worktree from this branch">＋ worktree</button>`
+      + `<button class="wtp-mini ghost ${menuOpen ? "on" : ""}" data-act="move" data-branch="${esc(b.name)}" title="check this branch out in an existing worktree">move</button>`
+      + (menuOpen ? wtpMoveMenu(b.name) : "")
+      + `</span>`;
+  }
+  return `<div class="wtp-brow">${nm}${divergeChip(b.ahead)}<span class="sp"></span>${action}</div>`;
+}
+
+function panelHtml(worktrees, branches, data){
+  const w = state.wt;
+  const closed = branches.filter((b) => b.merged && !b.worktreePath && !b.isDefault);
+  const closedSet = new Set(closed);
+  const active = branches.filter((b) => !closedSet.has(b));
+  const liveCount = worktrees.reduce((n, x) => n + (x.serverState === "live" ? 1 : 0), 0);
+
+  let h = `<div class="wtp">`;
+  h += `<div class="wtp-head"><span class="wtp-title">Worktrees</span>`
+    + `<span class="wtp-sub">${liveCount ? `${liveCount} server${liveCount === 1 ? "" : "s"} live` : `${worktrees.length} tree${worktrees.length === 1 ? "" : "s"}`}</span></div>`;
+  if(w.error) h += `<div class="wtp-err"><span class="wtp-err-msg">${esc(w.error)}</span><button class="wtp-x" data-act="dismiss" aria-label="dismiss">×</button></div>`;
+  h += worktrees.map(wtpItem).join("") || `<div class="wtp-empty">no worktrees</div>`;
+  if(data && !data.serverScanned) h += `<div class="wtp-note">dev-server scan unavailable (lsof)</div>`;
+
+  h += `<div class="wtp-head mt"><span class="wtp-title">Branches</span><span class="wtp-sub">${active.length}</span></div>`;
+  h += active.map(wtpBranchRow).join("") || `<div class="wtp-empty">no branches</div>`;
+  if(closed.length){
+    h += `<button class="wtp-merged-toggle" data-act="togglemerged" aria-expanded="${w.mergedOpen}">`
+      + `<span class="chev">${w.mergedOpen ? "▾" : "▸"}</span> Merged <span class="wtp-sub">${closed.length}</span></button>`;
+    if(w.mergedOpen) h += `<div class="wtp-merged">${closed.map(wtpBranchRow).join("")}</div>`;
+  }
+  h += `</div>`;
+  return h;
+}
+
+// re-render the panel from the last-fetched data (no network) — for pure UI toggles
+function repaintPanel(){
+  const aside = $("#workAside");
+  if(!aside || !state.wtData) return;
+  aside.innerHTML = panelHtml(state.wtData.worktrees, state.wtData.branches, state.wtData);
+  state.wtSig = ""; // let the next poll reconcile against fresh data
+}
+
+async function renderWorktreePanel(force){
+  const aside = $("#workAside");
+  if(!aside) return;
+  let data;
+  try{ data = await api("/api/worktrees"); }
+  catch(e){ if(!state.wtData) aside.innerHTML = `<div class="wtp"><div class="wtp-empty">couldn't read git state</div></div>`; return; }
+  // never clobber a field the user is typing in
+  if(!force && aside.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;
+
+  const worktrees = data.worktrees || [];
+  const branches = data.branches || [];
+  state.wtData = { worktrees, branches, serverScanned: data.serverScanned };
+
+  const w = state.wt;
+  const sig = "wtp:" + JSON.stringify({
+    w: worktrees.map((x) => [x.path, x.branch, x.serverState, (x.servers || []).map((s) => s.port), x.devCommand, x.ahead]),
+    b: branches.map((x) => [x.name, x.worktreePath, x.merged, x.ahead, x.committedAt]),
+    ui: [w.menuBranch, w.editCmd, w.error, w.mergedOpen, [...w.busy]],
+  });
+  if(!force && sig === state.wtSig) return;
+  aside.innerHTML = panelHtml(worktrees, branches, data);
+  state.wtSig = sig;
+}
+
+// panel button dispatch (delegated from the Work view click handler)
+async function handleWtAction(el){
+  const w = state.wt;
+  const act = el.dataset.act;
+  const wt = el.dataset.wt;
+  const branch = el.dataset.branch;
+
+  if(act === "togglemerged"){ w.mergedOpen = !w.mergedOpen; return repaintPanel(); }
+  if(act === "move"){ w.menuBranch = w.menuBranch === branch ? null : branch; return repaintPanel(); }
+  if(act === "dismiss"){ w.error = null; return repaintPanel(); }
+  if(act === "canceledit"){ w.editCmd = null; return repaintPanel(); }
+  if(act === "editcmd"){
+    w.editCmd = wt; repaintPanel();
+    const i = $("#wtpCmdInput"); if(i){ i.focus(); i.select(); }
+    return;
+  }
+  if(act === "savecmd"){
+    const i = $("#wtpCmdInput");
+    const r = await apiPost("/api/devcommand", { command: i ? i.value : "" });
+    w.editCmd = null; w.error = r && r.error ? r.error : null;
+    return renderWorktreePanel(true);
+  }
+  if(act === "start"){
+    w.busy.add("srv:" + wt); repaintPanel();
+    const r = await apiPost("/api/server/start", { worktree: wt });
+    w.busy.delete("srv:" + wt);
+    w.error = r && r.ok === false ? (r.error || "couldn't start server") : null;
+    renderWorktreePanel(true);
+    setTimeout(() => renderWorktreePanel(true), 1500); // catch the port once it binds
+    return;
+  }
+  if(act === "stop"){
+    const r = await apiPost("/api/server/stop", { worktree: wt });
+    w.error = r && r.ok === false ? (r.error || null) : null;
+    renderWorktreePanel(true);
+    setTimeout(() => renderWorktreePanel(true), 800);
+    return;
+  }
+  if(act === "create"){
+    const r = await apiPost("/api/worktree/create", { branch });
+    w.error = r && r.ok === false ? (r.error || "couldn't create worktree") : null;
+    return renderWorktreePanel(true);
+  }
+  if(act === "checkout"){
+    w.menuBranch = null;
+    const r = await apiPost("/api/worktree/checkout", { worktree: wt, branch });
+    w.error = r && r.ok === false ? (r.error || "couldn't move worktree") : null;
+    return renderWorktreePanel(true);
+  }
 }
 
 // ---- cost / token usage ----------------------------------------------------
@@ -795,14 +1020,12 @@ async function loadProjects(){
   let d;
   try{ d = await api("/api/projects"); }catch(e){ return; }
   state.projects = d.projects || [];
-  state.currentProject = d.current || null;
   const known = (s) => !!s && state.projects.some((p) => p.slug === s);
-  // Keep the current selection if it's still valid; else restore the last-picked one,
-  // else fall back to the repo the server runs in (the default project).
+  // Keep the current selection if it's still valid; else restore the last-viewed project;
+  // else fall back to the most-recently-active one (listRepos already sorts by activity).
   if(!known(state.project)){
     const saved = savedProject();
     state.project = known(saved) ? saved
-      : known(state.currentProject) ? state.currentProject
       : (state.projects[0] && state.projects[0].slug) || null;
   }
   renderSwitcher();
@@ -831,13 +1054,11 @@ function renderMenu(){
   menu.innerHTML = state.projects.map((p) => {
     const [owner, name] = splitSlug(p.slug);
     const sel = p.slug === state.project;
-    const here = p.slug === state.currentProject;
     return `<button class="repo-opt ${sel ? "sel" : ""}" type="button" role="option" `
       + `aria-selected="${sel}" data-slug="${esc(p.slug)}">`
       +   `<span class="ro-tick">${sel ? "✓" : ""}</span>`
       +   `<span class="ro-id"><span class="ro-owner">${esc(owner)}</span><span class="ro-name">${esc(name || owner)}</span></span>`
       +   `<span class="ro-hint">${esc(projHint(p))}</span>`
-      +   (here ? `<span class="ro-here">here</span>` : "")
       + `</button>`;
   }).join("");
 }
@@ -906,6 +1127,9 @@ function toggleCommits(btn){
 
 function initInteractions(){
   viewEl.addEventListener("click", (e) => {
+    // worktrees panel controls (buttons carry data-act; the open-server link is a plain <a>)
+    const wtAct = e.target.closest("[data-act]");
+    if(wtAct && wtAct.closest("#workAside")){ e.preventDefault(); handleWtAction(wtAct); return; }
     const commits = e.target.closest(".commits-toggle");
     if(commits){ e.preventDefault(); toggleCommits(commits); return; }
     const head = e.target.closest(".trow-head");
@@ -916,6 +1140,13 @@ function initInteractions(){
       if(window.getSelection && String(window.getSelection()).length) return; // reading
       location.hash = card.dataset.href;
     }
+  });
+
+  // Enter saves / Escape cancels the inline dev-command editor
+  viewEl.addEventListener("keydown", (e) => {
+    if(e.target.id !== "wtpCmdInput") return;
+    if(e.key === "Enter"){ e.preventDefault(); handleWtAction({ dataset:{ act:"savecmd" } }); }
+    else if(e.key === "Escape"){ e.preventDefault(); state.wt.editCmd = null; repaintPanel(); }
   });
 
   // view-mode links are anchors; the All/Unfinished filter is a stateful toggle
@@ -941,6 +1172,10 @@ function initInteractions(){
   // dismiss the menu on an outside click or Escape
   document.addEventListener("click", (e) => {
     if(state.menuOpen && !e.target.closest("#repoMenu") && !e.target.closest("#repoBtn")) closeMenu();
+    // close the worktree "move" picker when clicking away from it
+    if(state.wt.menuBranch && !e.target.closest(".wtp-menu") && !e.target.closest('[data-act="move"]')){
+      state.wt.menuBranch = null; repaintPanel();
+    }
   });
   document.addEventListener("keydown", (e) => { if(e.key === "Escape") closeMenu(); });
 }
