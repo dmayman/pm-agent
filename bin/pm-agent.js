@@ -10,7 +10,7 @@
 // `npx pm-agent` works with zero install.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
@@ -43,9 +43,18 @@ LOCAL-DEV COMMANDS
   release <level>    Cut a release: bump (patch|minor|major), tag, push, publish
                        to npm. Run from the repo (or pass its path).
 
-LEDGER COMMANDS (the observational timeline — see docs/ledger.md)
-  enable             Opt this repo into the ledger (--explicit for manual capture)
+SET UP A REPO
+  setup              Full setup in one shot: enable the ledger, scaffold the
+                       GitHub-issues grooming workflow, and point you to the
+                       dashboard. Flags: --explicit, --no-issues, --serve, --port N
+  enable             Ledger only — opt this repo into the timeline
+                       (--explicit for manual capture)
   disable            Opt this repo out (keeps the timeline data)
+  setup-issues       Grooming workflow only — enable Issues, create the
+                       idea→ready→status:in-progress labels, and drop in the 💡 Idea
+                       template. Needs an authenticated \`gh\`. Idempotent.
+
+LEDGER COMMANDS (the observational timeline — see docs/ledger.md)
   timeline           Show the activity timeline (--days N, --thread REF, --json)
   inflight           Active threads, recent events, and loose ends
   loose              Open loose ends (loose resolve <id> to close one)
@@ -318,6 +327,140 @@ function cmdVersion() {
   process.stdout.write(`${pkg.version}\n`);
 }
 
+// The three repo-agnostic grooming labels — the workflow an issue moves through:
+// captured as an `idea`, scoped to `ready`, then claimed by a live coding session.
+// Repo-specific `area:*` domain labels are intentionally left for you to add by hand.
+const WORKFLOW_LABELS = [
+  ["idea", "C5DEF5", "Raw idea — captured, not yet scoped or prioritized"],
+  ["ready", "0E8A16", "Scoped and ready to be picked up"],
+  ["status:in-progress", "E99695", "Claimed by a live coding session"],
+];
+
+const ISSUE_TEMPLATE_CONFIG = `blank_issues_enabled: true\n`;
+
+const IDEA_TEMPLATE = `---
+name: 💡 Idea
+about: Capture a new idea or improvement — rough is fine, scoping comes later
+title: ""
+labels: ["idea"]
+---
+
+## What
+
+<!-- The idea in a sentence or two. What would change, or what would exist that doesn't today? -->
+
+## Why / the itch
+
+<!-- What prompted this? What's annoying, missing, or limiting right now? -->
+
+## Notes & open questions
+
+<!-- Optional: half-formed thoughts, links, alternatives, things to decide before this is "ready". -->
+
+<!--
+Add an area:* label for this repo's domain, if you use them.
+When it's been thought through and is ready to build, swap the \`idea\` label → \`ready\`.
+-->
+`;
+
+// Scaffold the GitHub-issues grooming workflow: enable Issues, create the
+// idea→ready→status:in-progress labels, and write the 💡 Idea template. This is the
+// repo-agnostic half of "set up pm-agent on a repo" (the other half is the ledger,
+// via `pm-agent enable`). Deterministic and idempotent; needs an authenticated `gh`.
+function cmdSetupIssues() {
+  if (!runLocal("gh", ["auth", "status"], { capture: true, tolerate: true }).ok) {
+    fail("`gh` not found or not authenticated. Install the GitHub CLI and run `gh auth login`, then retry.");
+  }
+  const view = runLocal("gh", ["repo", "view", "--json", "nameWithOwner,hasIssuesEnabled"], {
+    capture: true,
+    tolerate: true,
+  });
+  if (!view.ok) fail("Not inside a GitHub repository gh can resolve (need an `origin` remote).");
+  const { nameWithOwner: slug, hasIssuesEnabled } = JSON.parse(view.stdout);
+  const top = runLocal("git", ["rev-parse", "--show-toplevel"], { capture: true, tolerate: true });
+  if (!top.ok) fail("Not inside a git working tree.");
+  const root = top.stdout;
+
+  process.stdout.write(`Setting up the issue-grooming workflow for ${slug}…\n`);
+
+  // 1. Issues on.
+  if (hasIssuesEnabled) {
+    process.stdout.write("  · Issues already enabled\n");
+  } else {
+    runLocal("gh", ["repo", "edit", slug, "--enable-issues"]);
+    process.stdout.write("  · enabled Issues\n");
+  }
+
+  // 2. Workflow labels — `--force` upserts, so re-running just refreshes color/description.
+  for (const [name, color, description] of WORKFLOW_LABELS) {
+    runLocal("gh", ["label", "create", name, "--color", color, "--description", description, "--force"], {
+      tolerate: true,
+    });
+    process.stdout.write(`  · label ${name}\n`);
+  }
+
+  // 3. Issue template — write only if absent, so a repo's customized template is never clobbered.
+  const tdir = path.join(root, ".github", "ISSUE_TEMPLATE");
+  mkdirSync(tdir, { recursive: true });
+  const configPath = path.join(tdir, "config.yml");
+  const ideaPath = path.join(tdir, "idea.md");
+  if (existsSync(ideaPath)) {
+    process.stdout.write("  · issue template already present (left as-is)\n");
+  } else {
+    if (!existsSync(configPath)) writeFileSync(configPath, ISSUE_TEMPLATE_CONFIG);
+    writeFileSync(ideaPath, IDEA_TEMPLATE);
+    process.stdout.write("  · added .github/ISSUE_TEMPLATE/idea.md\n");
+  }
+
+  process.stdout.write(
+    "\n  The grooming loop: capture ideas as issues (labeled `idea`), scope them to\n" +
+      "  `ready`, and a coding session flips `ready` → `status:in-progress` when it starts.\n" +
+      "  Add `area:*` labels by hand for this repo's domains.\n" +
+      "  Commit .github/ISSUE_TEMPLATE/ to share the template with the repo.\n"
+  );
+}
+
+// The one-shot repo setup: enable the ledger (backfills the timeline), scaffold the
+// issue-grooming workflow, and leave the user at the dashboard. Each step is idempotent,
+// so re-running is safe. Grooming is skipped cleanly (not fatally) when `gh` is missing
+// or `--no-issues` is passed — the ledger still gets set up.
+async function cmdSetup(argv) {
+  const flags = new Set(
+    argv.filter((a) => a.startsWith("--")).map((a) => a.replace(/^--/, "").split("=")[0])
+  );
+  const { runLedger } = await import("../packages/db/cli.js");
+
+  // 1. Ledger — opt in + backfill the timeline. This is what populates the dashboard.
+  process.stdout.write("① Ledger\n");
+  await runLedger("enable", flags.has("explicit") ? ["--explicit"] : []);
+
+  // 2. Issue-grooming workflow — best-effort; the ledger is already set up regardless.
+  process.stdout.write("\n② Issue grooming\n");
+  if (flags.has("no-issues")) {
+    process.stdout.write("  · skipped (--no-issues)\n");
+  } else if (!runLocal("gh", ["auth", "status"], { capture: true, tolerate: true }).ok) {
+    process.stdout.write(
+      "  · skipped — `gh` not found or not authenticated.\n" +
+        "    Run `gh auth login`, then `pm-agent setup-issues` to add it.\n"
+    );
+  } else {
+    cmdSetupIssues();
+  }
+
+  // 3. Dashboard — the whole point is to end up looking at it.
+  process.stdout.write("\n③ Dashboard\n");
+  if (flags.has("serve")) {
+    const portArgs = argv.filter((a) => a.startsWith("--port"));
+    await runLedger("serve", portArgs); // blocks until Ctrl-C
+  } else {
+    process.stdout.write(
+      "  ✅ Setup complete.\n\n" +
+        "     See the dashboard:   pm-agent serve      → http://localhost:4477\n" +
+        "     Restart Claude Code so the session hooks pick up the ledger.\n"
+    );
+  }
+}
+
 const argv = process.argv.slice(2);
 const [cmd, arg] = argv;
 
@@ -345,6 +488,12 @@ switch (cmd) {
     break;
   case "validate":
     cmdValidate(arg);
+    break;
+  case "setup":
+    await cmdSetup(argv.slice(1));
+    break;
+  case "setup-issues":
+    cmdSetupIssues();
     break;
   case "enable":
   case "disable":
