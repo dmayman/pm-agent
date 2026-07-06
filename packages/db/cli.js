@@ -178,6 +178,67 @@ function cmdThread(argv) {
   } else fail(`unknown thread subcommand: ${sub}`);
 }
 
+// Parse "43,49" / "#43 #49" / "43 49" into [43, 49].
+function parseIssueList(v) {
+  if (v == null || v === true) return [];
+  return String(v)
+    .split(/[\s,]+/)
+    .map((s) => s.replace(/^#/, "").trim())
+    .filter(Boolean)
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n > 0);
+}
+
+// Manual initiative control — what Claude drives mid-session ("group #43 and #49 into an
+// initiative about X"). An initiative IS a thread; these subcommands additionally PIN the
+// named issues so the auto-clusterer won't move them on the next recluster.
+function cmdInitiative(argv) {
+  const [sub, ...rest] = argv;
+  const { _, flags } = parseArgs(rest);
+  const db = S.openDb();
+  const repo = requireRepo(db);
+
+  if (sub === "new") {
+    const name = _.join(" ").trim();
+    if (!name) fail('pm-agent initiative new: need a name, e.g. initiative new "auth hardening" --issues 43,49');
+    const issues = parseIssueList(flags.issues);
+    const id = S.createThread(db, repo.id, {
+      title: name,
+      genesis: typeof flags.genesis === "string" ? flags.genesis : null,
+    });
+    for (const n of issues) S.pinIssueToThread(db, repo.id, n, id);
+    if (flags.json) return print({ id, name, issues });
+    process.stdout.write(dim(`initiative #${id} "${name}" · pinned ${issues.length} issue(s)\n`));
+  } else if (sub === "add") {
+    const ref = (_.join(" ").trim() || (typeof flags.to === "string" ? flags.to : "")).trim();
+    if (!ref) fail('pm-agent initiative add: name or id of the initiative, e.g. initiative add "auth hardening" --issues 12');
+    const issues = parseIssueList(flags.issues);
+    if (!issues.length) fail("pm-agent initiative add: --issues is required");
+    const id = S.resolveThread(db, repo.id, ref);
+    for (const n of issues) S.pinIssueToThread(db, repo.id, n, id);
+    if (flags.json) return print({ id, issues });
+    process.stdout.write(dim(`pinned ${issues.length} issue(s) to initiative #${id}\n`));
+  } else if (sub === "remove") {
+    const issues = parseIssueList(flags.issues);
+    if (!issues.length) fail("pm-agent initiative remove: --issues is required");
+    for (const n of issues) S.unpinIssue(db, repo.id, n);
+    if (flags.json) return print({ unpinned: issues });
+    process.stdout.write(dim(`unpinned ${issues.length} issue(s) (a recluster may re-home them)\n`));
+  } else if (sub === "list" || sub === undefined) {
+    const rows = S.initiativesWithIssues(db, repo.id);
+    if (flags.json) return print(rows);
+    for (const t of rows) {
+      process.stdout.write(
+        `${bold("#" + t.id)} ${t.title}  ${STATUS_LABEL[t.status] || t.status}\n`
+      );
+      for (const i of t.issues) {
+        const pin = i.pinned ? c("36")(" ⚲ pinned") : "";
+        process.stdout.write(dim(`    #${i.number} ${i.title}${pin}\n`));
+      }
+    }
+  } else fail(`unknown initiative subcommand: ${sub}`);
+}
+
 function groupByDay(events) {
   const out = [];
   let cur = null;
@@ -317,6 +378,9 @@ function cmdContext() {
   lines.push(
     "[pm-agent ledger] You silently maintain this project's work ledger — the timeline of what's planned, in progress, and finished across ALL worktrees of this repo. This is yours to own: never announce that you're logging, never ask the user to manage it. Organize work into threads (a thread = one arc of work: its founding decisions, its events, its loose ends) and reorganize freely as your understanding sharpens."
   );
+  lines.push(
+    "Threads are also called initiatives — the higher-level buckets issues group into. When the user asks to (re)group issues (e.g. \"#43 and #49 should be an initiative about auth\"), act on it: create or extend the initiative and pin those issues with `pm-agent initiative new \"<name>\" --issues 43,49` or `pm-agent initiative add \"<name-or-id>\" --issues 12`. Pinned issues are locked — the automatic clusterer will never move them — so this is durable, not a one-off. Then be proactive: look over the other known issues, and if any clearly belong to that same initiative, add them too and tell the user which ones you pinned and why (undo with `pm-agent initiative remove --issues N`). Use `pm-agent initiative list --json` to see current groupings."
+  );
   if (mode === "explicit") {
     lines.push(
       "Capture mode = explicit: when something worth remembering happens — a decision, a build/test/review milestone, a followup, or a deferred loose end — record it with `pm-agent log --type <decided|built|tested|reviewed|followup|deferred|merged|blocked|note> [--thread \"<title or id>\"] [--issue N] [--commit SHA] \"<one line>\"`. Judgement over volume: log what your future self would want on the timeline, not every action."
@@ -385,9 +449,18 @@ async function cmdEnable(argv) {
   );
 }
 
-async function cmdRecluster() {
+async function cmdRecluster(argv) {
+  const { flags } = parseArgs(argv);
   const db = S.openDb();
   const repo = requireRepo(db);
+  // --guidance persists a standing rubric for how THIS repo wants work grouped; every
+  // future auto-recluster reads it back. Pass --guidance "" to clear it.
+  if (typeof flags.guidance === "string") {
+    S.setConfig(db, repo.slug, "cluster.guidance", flags.guidance);
+    process.stdout.write(
+      dim(flags.guidance ? `grouping guidance saved for ${repo.slug}\n` : `grouping guidance cleared\n`)
+    );
+  }
   process.stdout.write(dim("re-grouping issues into initiatives (Haiku)…\n"));
   const { runFullIngest } = await import("./ingest.js");
   const res = await runFullIngest(db, repo, {});
@@ -481,6 +554,7 @@ const LEDGER_HELP = `
 LEDGER COMMANDS
   log <summary...>       Record an event (--type, --thread, --issue, --commit, --branch, --pr)
   thread [list|new|set]  Inspect or manage threads (--status, --genesis, --title)
+  initiative <sub>       Group issues into initiatives by hand (new|add|remove|list; --issues 43,49)
   timeline               The activity timeline (--days N, --since ISO, --thread REF, --json)
   inflight               Active threads + their recent events + loose ends (--json)
   loose [resolve <id>]   Open loose ends (--json)
@@ -495,6 +569,8 @@ export async function runLedger(cmd, argv) {
       return cmdLog(argv);
     case "thread":
       return cmdThread(argv);
+    case "initiative":
+      return cmdInitiative(argv);
     case "timeline":
       return cmdTimeline(argv);
     case "inflight":

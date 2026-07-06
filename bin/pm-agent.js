@@ -68,6 +68,7 @@ LEDGER COMMANDS (the observational timeline — see docs/ledger.md)
   loose              Open loose ends (loose resolve <id> to close one)
   log <summary...>   Record an event (--type, --thread, --issue, --commit …)
   thread             list | new <title> | set <id> (--status, --genesis …)
+  initiative         Group issues by hand: new "<name>" --issues 43,49 | add | remove | list
   issue-title <n> …  Set the #-glossary title for an issue
   config [key] [val] capture=observer|explicit, etc.
   serve              Serve the operator UI (--port)
@@ -636,6 +637,7 @@ switch (cmd) {
   case "disable":
   case "log":
   case "thread":
+  case "initiative":
   case "timeline":
   case "inflight":
   case "loose":
