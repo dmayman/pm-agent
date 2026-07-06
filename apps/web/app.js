@@ -58,6 +58,14 @@ function dayLabel(d){
   return { label:MONTHS[d.getMonth()] + " " + d.getDate(), date:d.getFullYear() };
 }
 
+function fmtShortDate(iso){
+  if(!iso) return "";
+  const d = new Date(iso);
+  const now = new Date();
+  const s = MONTHS[d.getMonth()] + " " + d.getDate();
+  return d.getFullYear() === now.getFullYear() ? s : s + ", " + d.getFullYear();
+}
+
 function relAge(iso){
   const then = new Date(iso).getTime();
   const s = Math.max(0, (Date.now() - then) / 1000);
@@ -86,10 +94,11 @@ function nodeClass(t){
 
 // ---- app state --------------------------------------------------------------
 const state = {
-  view: "timeline",
+  view: "work",
   threadId: null,
   meta: null,
   seenEvents: new Set(),   // event ids we've already rendered (for new-flash)
+  expanded: new Set(),     // thread ids whose evidence is open (Work view)
   primed: false,           // first render done -> flashing enabled
   sig: "",                 // last-rendered signature per view
 };
@@ -99,15 +108,18 @@ const mainEl = $("#main");
 
 // ---- routing ----------------------------------------------------------------
 function parseHash(){
-  const h = (location.hash || "#/timeline").replace(/^#\/?/, "");
+  const h = (location.hash || "#/work").replace(/^#\/?/, "");
   const parts = h.split("/").filter(Boolean);
   if(parts[0] === "thread" && parts[1]) return { view:"thread", threadId:parts[1] };
+  if(parts[0] === "timeline") return { view:"timeline" };
   if(parts[0] === "inflight") return { view:"inflight" };
-  return { view:"timeline" };
+  return { view:"work" };
 }
 
 function syncNav(){
-  const activeNav = state.view === "inflight" ? "inflight" : "timeline";
+  // a thread drill-in belongs to Work
+  const activeNav = state.view === "timeline" ? "timeline"
+    : state.view === "inflight" ? "inflight" : "work";
   document.querySelectorAll(".nav-item").forEach((a) => {
     a.classList.toggle("active", a.dataset.view === activeNav);
   });
@@ -127,7 +139,8 @@ async function onRoute(){
 // ---- data + render orchestration -------------------------------------------
 async function refresh(force){
   try{
-    if(state.view === "inflight")      await renderInflight(force);
+    if(state.view === "work")          await renderWork(force);
+    else if(state.view === "inflight") await renderInflight(force);
     else if(state.view === "thread")   await renderThread(force);
     else                               await renderTimeline(force);
   }catch(err){
@@ -238,25 +251,123 @@ async function renderThread(force){
   if(!force && sig === state.sig) return;
 
   const sm = statusMeta(th.status);
+  const summary = th.summary
+    ? `<p class="th-summary">${esc(th.summary)}</p>`
+    : th.genesis ? "" /* genesis shown below as decisions */
+    : `<p class="th-summary none">No synthesized summary yet — the story is still being distilled.</p>`;
   const genesis = th.genesis
-    ? `<div class="th-genesis"><span class="rune">genesis</span><span>${esc(th.genesis)}</span></div>`
-    : `<div class="th-genesis none">no recorded genesis for this thread</div>`;
+    ? `<div class="th-genesis"><span class="rune">decisions</span><span>${esc(th.genesis)}</span></div>`
+    : "";
 
   const head = `<div class="thread-head">`
     + `<div class="th-status-row">`
     +   `<span class="pill" style="--pc:${sm.pc}"><span class="pdot"></span>${esc(sm.label)}</span>`
     +   `<span class="th-title">${esc(th.title || "Untitled thread")}</span>`
-    + `</div>${genesis}`
+    + `</div>${summary}${genesis}`
     + `<div class="th-meta"><span>${events.length} event${events.length===1?"":"s"}</span>`
     +   (th.updated_at ? `<span>updated ${esc(relAge(th.updated_at))} ago</span>` : "")
     + `</div></div>`;
 
-  setTopbar(`<a class="tb-back" href="#/timeline"><span class="arw">←</span>All activity</a>`
+  setTopbar(`<a class="tb-back" href="#/work"><span class="arw">←</span>Work</a>`
     + `<span class="tb-title">${esc(th.title || "Thread")}</span>`
     + `<span class="tb-spacer"></span>${liveTag()}`);
 
   paint(head + renderDays(events), { scrollSafe: !force && state.primed });
   markSeen(events);
+  state.sig = sig;
+}
+
+// ---- work (thread-centric, summary-led) ------------------------------------
+// A compact evidence row: the technical commit/merge, subordinate to the story.
+function evidenceRow(ev){
+  const d = new Date(ev.ts);
+  const refs = refChips(ev.refs);
+  const dot = typeMeta(ev.type).node === "hollow" ? "ev-dot hollow" : "ev-dot";
+  return `<div class="ev-line" style="--hue:${hueVar(ev.type)}">`
+    + `<span class="ev-time">${fmtShortDate(ev.ts)}</span>`
+    + `<span class="${dot}"></span>`
+    + `<span class="ev-type">${esc(typeMeta(ev.type).label)}</span>`
+    + `<span class="ev-sum">${esc(ev.summary)}</span>`
+    + (refs ? `<span class="ev-refs">${refs}</span>` : "")
+    + `</div>`;
+}
+
+function workCard(th, events, i){
+  const sm = statusMeta(th.status);
+  const open = state.expanded.has(String(th.id));
+  const n = th.event_count != null ? th.event_count : events.length;
+
+  // story first: summary is the hero, falling back to genesis, then a gentle note
+  const hero = th.summary
+    ? `<p class="wcard-summary">${esc(th.summary)}</p>`
+    : th.genesis
+    ? `<p class="wcard-summary is-genesis">${esc(th.genesis)}</p>`
+    : `<p class="wcard-summary none">No synthesized summary yet.</p>`;
+
+  const evidence = events.length
+    ? `<div class="wcard-evidence">`
+      + `<button class="wt-toggle" data-id="${esc(th.id)}" aria-expanded="${open}">`
+      +   `<span class="chev">›</span>`
+      +   `<span class="wt-count">${n} event${n === 1 ? "" : "s"}</span>`
+      + `</button>`
+      + `<div class="wt-events" ${open ? "" : "hidden"}>${events.map(evidenceRow).join("")}</div>`
+      + `</div>`
+    : "";
+
+  return `<article class="wcard" data-href="#/thread/${esc(th.id)}" `
+    + `style="--accent:${sm.pc};--d:${Math.min(i,10)*34}ms">`
+    + `<div class="wcard-top">`
+    +   `<span class="pill" style="--pc:${sm.pc}"><span class="pdot"></span>${esc(sm.label)}</span>`
+    +   `<a class="wcard-title" href="#/thread/${esc(th.id)}">${esc(th.title || "Untitled thread")}</a>`
+    +   `<span class="wcard-date">${esc(fmtShortDate(th.last_event_ts || th.updated_at))}</span>`
+    + `</div>`
+    + hero
+    + evidence
+    + `</article>`;
+}
+
+async function renderWork(force){
+  const [threads, timeline] = await Promise.all([
+    api("/api/threads"),
+    api("/api/timeline?days=3650&limit=500"),
+  ]);
+  const sig = "wk:" + threads.length + ":"
+    + threads.map((t) => t.id + "@" + t.status + "@" + t.last_event_ts + "@" + (t.summary ? 1 : 0)).join(",")
+    + ":" + (timeline[0] ? timeline[0].id : 0);
+  if(!force && sig === state.sig) return;
+
+  // evidence per thread, newest-first
+  const byThread = new Map();
+  for(const ev of timeline){
+    if(ev.thread_id == null) continue;
+    if(!byThread.has(ev.thread_id)) byThread.set(ev.thread_id, []);
+    byThread.get(ev.thread_id).push(ev);
+  }
+
+  // in flight (active / blocked / in_review) before done; newest activity first
+  const rank = (s) => (s === "done" ? 1 : 0);
+  const when = (t) => new Date(t.last_event_ts || t.updated_at || 0).getTime();
+  const sorted = threads.slice().sort((a, b) => rank(a.status) - rank(b.status) || when(b) - when(a));
+
+  let html;
+  if(sorted.length){
+    html = `<div class="wlist">`
+      + sorted.map((th, i) => workCard(th, byThread.get(th.id) || [], i)).join("")
+      + `</div>`;
+  }else{
+    html = `<div class="empty"><div class="glyph"></div>`
+      + `<div class="e-title">No work yet</div>`
+      + `<div class="e-sub">threads appear here as the ledger records arcs of work</div></div>`;
+  }
+
+  const inflight = sorted.filter((t) => t.status !== "done").length;
+  setTopbar(`<span class="tb-title">Work</span>`
+    + `<span class="tb-sub">${sorted.length} thread${sorted.length === 1 ? "" : "s"}`
+    + (inflight ? ` · ${inflight} in flight` : "") + `</span>`
+    + `<span class="tb-spacer"></span>${liveTag()}`);
+
+  paint(html, { scrollSafe: !force && state.primed });
+  state.primed = true;
   state.sig = sig;
 }
 
@@ -272,15 +383,17 @@ function miniRow(ev){
 function threadCard(th, events, i){
   const sm = statusMeta(th.status);
   const recent = events.slice(0, 3);
-  const genesis = th.genesis
+  const blurb = th.summary
+    ? `<div class="card-summary">${esc(th.summary)}</div>`
+    : th.genesis
     ? `<div class="card-genesis">${esc(th.genesis)}</div>`
-    : `<div class="card-genesis none">no genesis recorded</div>`;
+    : `<div class="card-genesis none">no summary yet</div>`;
   const more = th.event_count > recent.length
     ? `<div class="card-more">+${th.event_count - recent.length} earlier</div>` : "";
   return `<div class="card" data-href="#/thread/${esc(th.id)}" style="--accent:${sm.pc};--d:${Math.min(i,8)*40}ms">`
     + `<div class="card-top"><span class="card-title">${esc(th.title || "Untitled thread")}</span>`
     +   `<span class="pill" style="--pc:${sm.pc}"><span class="pdot"></span>${esc(sm.label)}</span></div>`
-    + genesis
+    + blurb
     + (recent.length ? `<div class="mini">${recent.map(miniRow).join("")}</div>` : "")
     + more
     + `</div>`;
@@ -344,6 +457,7 @@ async function renderInflight(force){
   setTopbar(`<span class="tb-title">In flight</span>`
     + `<span class="tb-sub">${threads.length} active · ${loose.length} loose</span>`
     + `<span class="tb-spacer"></span>${liveTag()}`);
+  $("#inflightBadge").textContent = threads.length || "";
 
   paint(html); // full replace; cards are stable enough that scroll-jump isn't a concern
   state.sig = sig;
@@ -377,7 +491,7 @@ async function loadMeta(){
     cap.hidden = false;
     cap.classList.toggle("explicit", m.capture === "explicit");
     $(".cap-label", cap).textContent = m.capture || "live";
-    $("#inflightBadge").textContent = m.threads != null ? m.threads : "";
+    $("#workBadge").textContent = m.threads != null ? m.threads : "";
     $("#looseFoot").innerHTML = m.loose
       ? `<span class="n">${m.loose}</span> loose end${m.loose===1?"":"s"} open`
       : `no loose ends`;
@@ -385,11 +499,29 @@ async function loadMeta(){
 }
 
 // ---- boot -------------------------------------------------------------------
+function toggleEvidence(btn){
+  const box = btn.parentElement.querySelector(".wt-events");
+  if(!box) return;
+  const id = String(btn.dataset.id);
+  const opening = box.hasAttribute("hidden");
+  if(opening){ box.removeAttribute("hidden"); state.expanded.add(id); }
+  else { box.setAttribute("hidden", ""); state.expanded.delete(id); }
+  btn.setAttribute("aria-expanded", opening ? "true" : "false");
+}
+
 function initInteractions(){
-  // card click -> thread (delegated; cards aren't links so inner links still work)
   viewEl.addEventListener("click", (e) => {
-    const card = e.target.closest(".card");
-    if(card && card.dataset.href && !e.target.closest("a")){ location.hash = card.dataset.href; }
+    // expand/collapse a thread's evidence (never navigates)
+    const toggle = e.target.closest(".wt-toggle");
+    if(toggle){ e.preventDefault(); toggleEvidence(toggle); return; }
+    // let explicit links (title, thread chips, refs) behave normally
+    if(e.target.closest("a")) return;
+    // click elsewhere on a card -> open the thread, unless the user is selecting text
+    const card = e.target.closest(".card, .wcard");
+    if(card && card.dataset.href){
+      if(window.getSelection && String(window.getSelection()).length) return;
+      location.hash = card.dataset.href;
+    }
   });
 }
 
@@ -402,8 +534,8 @@ async function boot(){
   await onRoute();
   // gentle live polling
   setInterval(() => { loadMeta(); refresh(false); }, 4000);
-  // keep relative ages fresh even without new data
-  setInterval(() => { if(state.view === "inflight") refresh(true); }, 60000);
+  // keep relative ages / dates fresh even without new data
+  setInterval(() => { if(state.view === "inflight" || state.view === "work") refresh(true); }, 60000);
 }
 
 boot();
