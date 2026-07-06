@@ -358,6 +358,7 @@ switch (cmd) {
   case "context":
   case "observe":
   case "ingest":
+  case "refresh":
   case "synthesize":
   case "recluster":
   case "serve": {

@@ -101,20 +101,38 @@ export function syncOpenBranches(db, repo) {
 //   in_progress — open, with an unmerged branch (started but unfinished — a loose thread)
 //   shipped     — open, but its work already merged (a different loose end: never closed)
 //   todo        — open, no work started
+// Returns the set of thread ids whose issues changed status (so callers can re-synthesize
+// exactly the affected thread summaries — the "what's next" line depends on these).
 export function computeStatuses(db, repo) {
   const hasMerged = db.prepare(
     `SELECT COUNT(*) c FROM events
        WHERE repo_id = ? AND json_extract(refs, '$.issue') = ?
          AND (type = 'merged' OR json_extract(refs, '$.pr') IS NOT NULL)`
   );
+  const changedThreads = new Set();
   for (const iss of S.listIssues(db, repo.id)) {
     let status;
     if (iss.state === "CLOSED") status = "done";
     else if (iss.branch) status = "in_progress";
     else if (hasMerged.get(repo.id, iss.number).c > 0) status = "shipped";
     else status = "todo";
-    S.setIssueFields(db, repo.id, iss.number, { status });
+    if (status !== iss.status) {
+      if (iss.thread_id) changedThreads.add(iss.thread_id);
+      S.setIssueFields(db, repo.id, iss.number, { status });
+    }
   }
+  return changedThreads;
+}
+
+// The deterministic git/GitHub refresh: re-pull issue state + open branches and recompute
+// lifecycle. No Haiku, no clustering — cheap enough to run silently on a heartbeat. Returns
+// { changedThreads, ghAvailable }. clusterIntoInitiatives is deliberately NOT called here:
+// re-grouping is a heavier, less frequent operation left to `ingest`/`recluster`.
+export function refreshLifecycle(db, repo) {
+  const issues = syncIssues(db, repo); // open/closed state (null if gh unavailable)
+  syncOpenBranches(db, repo); // unfinished-branch marks (uses merged-PR exclusion)
+  const changedThreads = computeStatuses(db, repo);
+  return { changedThreads, ghAvailable: issues !== null };
 }
 
 // Cluster issues into initiatives with Haiku, then rebuild threads so each thread is one

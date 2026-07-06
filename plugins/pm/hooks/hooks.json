@@ -11,6 +11,10 @@
           {
             "type": "command",
             "command": "test -f \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/pm-ledger.md\" && command -v pm-agent >/dev/null 2>&1 && pm-agent check-update 2>/dev/null || true"
+          },
+          {
+            "type": "command",
+            "command": "test -f \"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/pm-ledger.md\" && command -v pm-agent >/dev/null 2>&1 && (cd \"${CLAUDE_PROJECT_DIR:-$PWD}\" && pm-agent refresh >/dev/null 2>&1 &) || true"
           }
         ]
       }

@@ -161,31 +161,53 @@ export async function observeWorker(jobFile) {
     return;
   }
   const events = extractJsonArray(output);
-  if (events.length) {
-    const db = S.openDb();
-    const repo = db.prepare("SELECT * FROM repos WHERE slug = ?").get(job.repoSlug);
-    if (repo) {
-      const touched = new Set();
-      for (const e of events) {
-        if (!e || !e.type || !e.summary) continue;
-        const threadId = e.thread ? S.resolveThread(db, repo.id, String(e.thread)) : null;
-        S.logEvent(db, repo.id, {
-          threadId,
-          type: S.normalizeType(e.type),
-          summary: String(e.summary),
-          refs: e.refs && typeof e.refs === "object" ? e.refs : null,
-          source: "observer",
-        });
-        if (threadId) touched.add(threadId);
-      }
-      // Keep the plain-language summary of any thread we just added to fresh.
-      if (touched.size) {
-        const { synthesizeThread } = await import("./synthesize.js");
-        for (const id of touched) synthesizeThread(db, repo, id);
-      }
+  const db = S.openDb();
+  const repo = db.prepare("SELECT * FROM repos WHERE slug = ?").get(job.repoSlug);
+  if (repo) {
+    const touched = new Set();
+    for (const e of events) {
+      if (!e || !e.type || !e.summary) continue;
+      const threadId = e.thread ? S.resolveThread(db, repo.id, String(e.thread)) : null;
+      S.logEvent(db, repo.id, {
+        threadId,
+        type: S.normalizeType(e.type),
+        summary: String(e.summary),
+        refs: e.refs && typeof e.refs === "object" ? e.refs : null,
+        source: "observer",
+      });
+      if (threadId) touched.add(threadId);
+    }
+
+    // Bridge the git/GitHub side: a turn may have closed an issue, merged a PR, or pushed a
+    // branch (e.g. `gh issue close 13`). The observer distills the narrative event, but issue
+    // *status* only moves when we re-derive lifecycle. Do it here, throttled, so done/shipped
+    // reclassify silently within a turn or two of the change — no manual `ingest` needed.
+    for (const id of await maybeRefreshLifecycle(db, repo)) touched.add(id);
+
+    // Re-synthesize every thread we touched (new event) or whose issue status just flipped.
+    if (touched.size) {
+      const { synthesizeThread } = await import("./synthesize.js");
+      for (const id of touched) synthesizeThread(db, repo, id);
     }
   }
   cleanup(jobFile);
+}
+
+const LIFECYCLE_THROTTLE_MS = 90 * 1000; // at most once every ~90s per repo
+
+// Run the deterministic lifecycle refresh if enough time has passed since the last one.
+// Returns the set of thread ids whose issue statuses changed (empty when skipped/unchanged).
+async function maybeRefreshLifecycle(db, repo) {
+  const key = `lifecycle-ts:${repo.slug}`;
+  const last = Number(S.getConfig(db, "global", key, "0")) || 0;
+  if (Date.now() - last < LIFECYCLE_THROTTLE_MS) return new Set();
+  S.setConfig(db, "global", key, String(Date.now()));
+  try {
+    const { refreshLifecycle } = await import("./work.js");
+    return refreshLifecycle(db, repo).changedThreads;
+  } catch {
+    return new Set();
+  }
 }
 
 function cleanup(f) {

@@ -446,6 +446,29 @@ async function cmdIngest(argv) {
   );
 }
 
+// Silent, cheap lifecycle refresh (no Haiku clustering): re-pull issue/PR/branch state,
+// recompute done/shipped/in-progress, and re-synthesize only the threads whose status flipped.
+// Wired to SessionStart (backstop) and available manually. Deterministic + fast.
+async function cmdRefresh(argv) {
+  const { flags } = parseArgs(argv);
+  const db = S.openDb();
+  const repo = requireRepo(db);
+  const { refreshLifecycle } = await import("./work.js");
+  const { changedThreads, ghAvailable } = refreshLifecycle(db, repo);
+  if (changedThreads.size) {
+    const { synthesizeThread } = await import("./synthesize.js");
+    for (const id of changedThreads) synthesizeThread(db, repo, id);
+  }
+  if (flags.json) return print({ changed: changedThreads.size, ghAvailable });
+  process.stdout.write(
+    dim(
+      ghAvailable
+        ? `lifecycle refreshed — ${changedThreads.size} thread${changedThreads.size === 1 ? "" : "s"} updated\n`
+        : "gh unavailable — nothing refreshed\n"
+    )
+  );
+}
+
 function fail(msg) {
   process.stderr.write(`pm-agent: ${msg}\n`);
   process.exit(1);
@@ -486,6 +509,8 @@ export async function runLedger(cmd, argv) {
       return cmdContext(argv);
     case "ingest":
       return cmdIngest(argv);
+    case "refresh":
+      return cmdRefresh(argv);
     case "synthesize":
       return cmdSynthesize(argv);
     case "recluster":
