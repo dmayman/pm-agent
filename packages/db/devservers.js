@@ -88,11 +88,17 @@ export async function startService(worktreePath, service) {
 
   let proc;
   try {
+    // Run through the user's LOGIN shell (`-lc`) so services inherit the same PATH/env a terminal
+    // has — Homebrew (/opt/homebrew/bin), nvm, docker/colima, direnv, etc. The observer usually
+    // runs as a launchd agent with a bare PATH (/usr/bin:/bin:…), so a plain `sh -c` can't find
+    // non-node tools: a `docker`/`colima`-based service would die with `command not found`. The
+    // login shell sources the user's profile and resolves them exactly as a terminal would.
+    // childEnv() still prepends the observer's own node bin dir as a belt-and-suspenders.
     // detached:true puts the child in its own process group so a later kill(-pid) takes the
-    // whole tree (npm -> node -> …), not just the npm shim.
-    proc = spawn(command, {
+    // whole tree (npm -> node -> …), not just the shim.
+    const loginShell = process.env.SHELL || "/bin/zsh";
+    proc = spawn(loginShell, ["-lc", command], {
       cwd,
-      shell: true,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
       env: childEnv(),
