@@ -260,14 +260,17 @@ function attachServers(worktrees, sockets, { skipPid, skipPort } = {}) {
 
 // The full report the /api/worktrees endpoint serves.
 //   opts.devCommand — per-repo override string (from ledger config), or null to auto-discover.
-export function worktreeReport(repo, { skipPid, skipPort, devCommand } = {}) {
+export function worktreeReport(repo, { skipPid, skipPort, devCommand, excludePaths } = {}) {
   const root = repo && repo.root;
   if (!root) return { worktrees: [], branches: [], serverScanned: false };
 
   const base = defaultBranch(root);
   const baseName = base.replace(/^origin\//, "");
 
-  const raw = parseWorktrees(root).filter((w) => !w.bare);
+  // Hidden worktrees (e.g. the preview environment's dedicated tree) are dropped entirely, so
+  // they never surface in the panel and don't claim a branch's worktreePath.
+  const hidden = new Set(excludePaths || []);
+  const raw = parseWorktrees(root).filter((w) => !w.bare && !hidden.has(w.path));
   const branchToWorktree = new Map(); // branch name -> worktree path
   for (const w of raw) if (w.branch) branchToWorktree.set(w.branch, w.path);
 

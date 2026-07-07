@@ -83,30 +83,23 @@ body::after{
   background:linear-gradient(180deg, rgba(255,255,255,0.012), transparent 40%);
 }
 
-.brand{ display:flex; gap:13px; align-items:flex-start; margin-bottom:34px; }
-.mark{ position:relative; width:15px; height:40px; flex:none; margin-top:2px; }
-.mark-line{ position:absolute; left:7px; top:0; bottom:0; width:1px; background:var(--spine); }
-.mark-bead{ position:absolute; left:3px; width:9px; height:9px; border-radius:50%;
-  box-shadow:0 0 0 3px var(--bg); }
-.mark-bead.b1{ top:1px;  background:var(--t-decided); }
-.mark-bead.b2{ top:16px; background:var(--t-built); }
-.mark-bead.b3{ top:31px; background:transparent; border:1.5px solid var(--t-deferred); }
+.brand{ display:block; margin-bottom:34px; }
 
-.brand-id{ position:relative; min-width:0; }
+.brand-id{ position:relative; width:100%; }
 .repo{ font-family:var(--mono); font-size:13px; letter-spacing:-0.1px; line-height:1.25;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .repo .owner{ color:var(--ink-mute); }
 .repo .name{ color:var(--ink); font-weight:600; }
 
 /* project switcher — the rail repo label becomes a menu button when >1 project exists */
-.repo-btn{ display:flex; align-items:center; gap:7px; max-width:100%;
-  margin:-3px -6px 0; padding:3px 6px; border:none; border-radius:7px;
+.repo-btn{ display:flex; align-items:center; justify-content:space-between; gap:7px; width:100%;
+  position:relative; margin:-8px -6px 0; padding:8px 11px; border:1px solid var(--line-strong); border-radius:9px;
   background:none; color:inherit; text-align:left; cursor:default; font:inherit;
-  transition:background .16s ease; }
+  transition:background .16s ease, border-color .16s ease; }
 .repo-btn:not(:disabled){ cursor:pointer; }
-.repo-btn:not(:disabled):hover{ background:var(--bg-1); }
-.repo-btn[aria-expanded="true"]{ background:var(--bg-2); }
-.repo-chev{ display:inline-flex; flex-direction:column; gap:2px; flex:none; }
+.repo-btn:not(:disabled):hover{ background:var(--bg-1); border-color:var(--ink-dim); }
+.repo-btn[aria-expanded="true"]{ background:var(--bg-2); border-color:var(--ink-dim); }
+.repo-chev{ display:inline-flex; flex-direction:column; gap:2px; flex:none; margin-right:-3px; }
 .repo-chev i{ display:block; width:0; height:0;
   border-left:3.5px solid transparent; border-right:3.5px solid transparent; }
 .repo-chev .up{ border-bottom:4px solid var(--ink-mute); }
@@ -782,3 +775,108 @@ a.ref:hover .k{ color:var(--ink-mute); }
 @media (prefers-reduced-motion:reduce){
   *{ animation-duration:0.001ms !important; animation-iteration-count:1 !important; }
 }
+
+/* ---------- preview environment ---------- */
+/* When this dashboard is a per-branch preview, a loud amber banner pins the top so it's never
+   confused with the real ledger; the app shifts down to make room. */
+#previewBanner{
+  position:fixed; top:0; left:0; right:0; height:34px; z-index:1000;
+  display:flex; align-items:center; gap:11px; padding:0 16px;
+  font-family:var(--mono); font-size:11.5px; font-weight:600; letter-spacing:0.04em;
+  color:#1a1200; white-space:nowrap;
+  background:
+    repeating-linear-gradient(135deg, rgba(0,0,0,0.06) 0 10px, transparent 10px 20px),
+    linear-gradient(180deg,#ffd24a,#f5b301);
+  box-shadow:0 1px 0 rgba(0,0,0,0.28), 0 6px 18px rgba(0,0,0,0.32);
+}
+#previewBanner .pv-label{ font-weight:800; letter-spacing:0.14em; }
+#previewBanner .pv-branch{
+  padding:2px 8px; border-radius:5px; background:rgba(0,0,0,0.22); color:#fff5d6;
+  font-weight:700; letter-spacing:0.02em;
+}
+#previewBanner .pv-note{ color:#3a2c00; font-weight:600; opacity:0.9; overflow:hidden; text-overflow:ellipsis; }
+body.preview-mode .app{ height:calc(100vh - 34px); margin-top:34px; }
+body.preview-mode .main{ height:calc(100vh - 34px); }
+
+/* the shared status dot — dark on the amber banner, amber on the dark panel link */
+.pv-dot{
+  width:8px; height:8px; border-radius:50%; flex:none;
+  background:#1a1200; box-shadow:0 0 0 0 rgba(26,18,0,0.5); animation:pvpulse 2s ease-out infinite;
+}
+@keyframes pvpulse{ 70%{ box-shadow:0 0 0 6px rgba(245,179,1,0); } 100%{ box-shadow:0 0 0 0 rgba(245,179,1,0); } }
+
+/* ---------- preview: branch picker in the amber bar ---------- */
+.pv-branch-wrap{ position:relative; display:inline-flex; }
+#previewBanner .pv-branch{
+  display:inline-flex; align-items:center; gap:6px; cursor:pointer;
+  padding:2px 8px; border-radius:5px; border:1px solid rgba(0,0,0,0.28);
+  background:rgba(0,0,0,0.22); color:#fff5d6; font:inherit; font-weight:700; letter-spacing:0.02em;
+}
+#previewBanner .pv-branch:hover{ background:rgba(0,0,0,0.32); }
+.pv-caret{ font-size:9px; opacity:0.85; }
+.pv-branch-menu{
+  position:absolute; top:calc(100% + 6px); left:0; z-index:1002; min-width:230px; max-height:60vh; overflow:auto;
+  padding:5px; border-radius:10px; background:var(--panel,#14161c); border:1px solid var(--line);
+  box-shadow:0 14px 40px rgba(0,0,0,0.5);
+}
+.pv-menu-opt{
+  display:flex; align-items:center; gap:9px; width:100%; text-align:left; cursor:pointer;
+  padding:7px 9px; border:0; border-radius:7px; background:transparent; color:var(--ink);
+  font-family:var(--mono); font-size:12px;
+}
+.pv-menu-opt:hover:not(:disabled){ background:rgba(245,179,1,0.12); }
+.pv-menu-opt:disabled{ cursor:default; opacity:0.75; }
+.pv-menu-opt.is-current{ color:var(--ink-soft); }
+.pv-menu-name{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pv-menu-tag{ font-size:10px; color:var(--ink-whisper); text-transform:uppercase; letter-spacing:0.08em; }
+.pv-menu-msg{ padding:9px; color:var(--ink-whisper); font-family:var(--mono); font-size:12px; }
+
+/* ---------- environment switch (top-right, both dashboards) ---------- */
+#envSwitch{ z-index:1002; }
+#envSwitch.env-preview{ position:fixed; top:0; right:12px; height:34px; display:flex; align-items:center; }
+#envSwitch.env-prod{ position:fixed; top:12px; right:18px; }
+body.has-envswitch #topbar{ padding-right:170px; }
+.env-btn{
+  display:inline-flex; align-items:center; gap:8px; cursor:pointer;
+  padding:5px 10px; border-radius:8px; font-family:var(--mono); font-size:12px;
+}
+.env-preview .env-btn{ border:1px solid rgba(0,0,0,0.28); background:rgba(0,0,0,0.22); color:#fff5d6; font-weight:700; }
+.env-preview .env-btn:hover{ background:rgba(0,0,0,0.32); }
+.env-prod .env-btn{ border:1px solid var(--line); background:var(--panel,#14161c); color:var(--ink); }
+.env-prod .env-btn:hover{ border-color:rgba(245,179,1,0.5); }
+.env-cur{ font-weight:700; }
+.env-sub{ opacity:0.7; font-weight:600; }
+.env-caret{ font-size:9px; opacity:0.8; }
+.env-dot{ width:7px; height:7px; border-radius:50%; flex:none; background:#f5b301; }
+.env-prod .env-btn>.env-dot{ background:#3ecf8e; }
+.env-menu{
+  position:absolute; top:calc(100% + 6px); right:0; min-width:210px;
+  padding:5px; border-radius:10px; background:var(--panel,#14161c); border:1px solid var(--line);
+  box-shadow:0 14px 40px rgba(0,0,0,0.5);
+}
+.env-preview .env-menu{ top:calc(100% + 2px); }
+.env-opt{
+  display:flex; align-items:center; gap:9px; padding:8px 9px; border-radius:7px;
+  text-decoration:none; color:var(--ink); font-family:var(--mono); font-size:12px;
+}
+a.env-opt:hover{ background:rgba(245,179,1,0.12); }
+.env-opt.is-current{ color:var(--ink-soft); }
+.env-opt.disabled{ color:var(--ink-whisper); }
+.env-opt-txt{ flex:1; }
+.env-opt .env-dot.alt{ background:#3ecf8e; }
+.env-check{ color:#f5b301; }
+
+/* ---------- preview: "switching branch" overlay ---------- */
+#pvSwitching{
+  position:fixed; inset:0; z-index:2000; display:flex; align-items:center; justify-content:center;
+  background:rgba(8,9,12,0.72); backdrop-filter:blur(2px);
+}
+.pvs-card{
+  display:flex; flex-direction:column; align-items:center; gap:10px; padding:26px 34px;
+  border-radius:14px; background:var(--panel,#14161c); border:1px solid rgba(245,179,1,0.35);
+  box-shadow:0 20px 60px rgba(0,0,0,0.55); text-align:center;
+}
+.pvs-spin{ width:26px; height:26px; border-radius:50%; border:3px solid rgba(245,179,1,0.25); border-top-color:#f5b301; animation:pvspin 0.8s linear infinite; }
+@keyframes pvspin{ to{ transform:rotate(360deg); } }
+.pvs-txt{ font-size:14px; color:var(--ink); }
+.pvs-sub{ font-family:var(--mono); font-size:12px; color:var(--ink-whisper); }
