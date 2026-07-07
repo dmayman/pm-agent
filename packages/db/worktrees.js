@@ -8,6 +8,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { serviceStatus } from "./devservers.js";
 
 function run(cmd, args, cwd) {
   try {
@@ -109,6 +110,85 @@ export function effectiveDevCommand(worktreePath, override) {
   return null;
 }
 
+// The per-branch service manifest: `<worktree>/.pm/services.json`, checked in, Claude-authored.
+// The dashboard READS this (it never edits it — the file is the source of truth). Returns
+//   { services: [...], error: null }  when present and valid,
+//   { services: null, error: "<msg>" } on malformed JSON / schema, and
+//   { services: null, error: null }    when the file is simply absent.
+// Each returned service is normalized: {name, command, cwd, port|null, health|null, url|null}.
+export function readServices(worktreePath) {
+  let raw;
+  try {
+    raw = readFileSync(path.join(worktreePath, ".pm", "services.json"), "utf8");
+  } catch {
+    return { services: null, error: null }; // absent — not an error, just no manifest
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return { services: null, error: "invalid .pm/services.json: " + (err && err.message) };
+  }
+  const list = parsed && Array.isArray(parsed.services) ? parsed.services : null;
+  if (!list) return { services: null, error: ".pm/services.json: expected { \"services\": [ … ] }" };
+  const services = [];
+  const seen = new Set();
+  for (const s of list) {
+    if (!s || typeof s.name !== "string" || !s.name.trim())
+      return { services: null, error: ".pm/services.json: every service needs a non-empty name" };
+    if (typeof s.command !== "string" || !s.command.trim())
+      return { services: null, error: `.pm/services.json: service "${s.name}" needs a command` };
+    if (seen.has(s.name))
+      return { services: null, error: `.pm/services.json: duplicate service name "${s.name}"` };
+    seen.add(s.name);
+    services.push({
+      name: s.name,
+      command: s.command,
+      cwd: typeof s.cwd === "string" && s.cwd.trim() ? s.cwd : ".",
+      port: Number.isFinite(s.port) ? Number(s.port) : null,
+      health: typeof s.health === "string" && s.health.trim() ? s.health : null,
+      url: typeof s.url === "string" && s.url.trim() ? s.url : null,
+    });
+  }
+  return { services, error: null };
+}
+
+// Enrich one declared service with its live state, from (a) the lsof port scan already attached
+// to the worktree and (b) this process's own registry for services we launched. Port-detected
+// liveness wins; a service we spawned but that hasn't bound its port yet reads as "starting";
+// a port-less service falls back purely to the registry (tracked → live, since we can't probe it).
+function enrichService(wt, s) {
+  const out = {
+    name: s.name,
+    command: s.command,
+    cwd: s.cwd,
+    port: s.port,
+    health: s.health,
+    url: s.url,
+    state: "stopped",
+    pid: null,
+    liveUrl: null,
+  };
+  const listener = s.port != null ? wt.servers.find((sv) => sv.port === s.port) : null;
+  const tracked = serviceStatus(wt.path, s.name);
+  if (listener) {
+    out.state = "live";
+    out.pid = listener.pid;
+    out.liveUrl = s.url || "http://localhost:" + s.port + (s.health || "");
+  } else if (tracked && !tracked.exited) {
+    // We launched it and it's still alive. With a port it's booting (not yet bound); without a
+    // port there's nothing to bind so treat "still running" as live.
+    out.pid = tracked.pid;
+    if (s.port != null) {
+      out.state = "starting";
+    } else {
+      out.state = "live";
+      out.liveUrl = s.url || null;
+    }
+  }
+  return out;
+}
+
 // Every TCP socket in LISTEN state, one row per (pid, port), deduped across the IPv4/IPv6 pair.
 function listeningSockets() {
   const out = run("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN"], undefined);
@@ -207,6 +287,16 @@ export function worktreeReport(repo, { skipPid, skipPort, devCommand } = {}) {
   });
 
   const serverScanned = attachServers(worktrees, { skipPid, skipPort });
+
+  // Per-worktree declared services (from .pm/services.json), each enriched with live state.
+  // Runs after attachServers so the lsof port scan is available for liveness. `devCommand` stays
+  // on each worktree for the no-manifest fallback the panel still renders.
+  for (const wt of worktrees) {
+    const svc = readServices(wt.path);
+    wt.servicesError = svc.error || null;
+    wt.servicesDeclared = Array.isArray(svc.services) && svc.services.length > 0;
+    wt.services = (svc.services || []).map((s) => enrichService(wt, s));
+  }
 
   // Which branches are merged into the default — those with no worktree are "closed".
   const mergedSet = new Set();

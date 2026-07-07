@@ -54,6 +54,7 @@ const ICON_PATHS = {
   chevronDown: '<polyline points="6 9 12 15 18 9"/>',
   chevronRight: '<polyline points="9 18 15 12 9 6"/>',
   play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
   plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
   x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
   externalLink: '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>',
@@ -864,11 +865,62 @@ function runMenuHtml(wt){
     + `</div>`;
 }
 
+// A worktree is "live" if its fallback dev server is up OR any declared service is running.
+function wtIsLive(wt){
+  return wt.serverState === "live" || (wt.services || []).some((s) => s.state === "live");
+}
+// Count of live services in a worktree (declared services if any, else the fallback dev server).
+function wtLiveCount(wt){
+  if(wt.servicesDeclared) return (wt.services || []).filter((s) => s.state === "live").length;
+  return wt.serverState === "live" ? 1 : 0;
+}
+
+// One declared service: a status dot (live/starting/stopped), its name (+ :port), an open-link
+// shown only when live, and a per-service Run (▶) / Stop (■) button.
+function serviceRow(wt, s){
+  const key = wt.path;
+  const busy = state.wt.busy.has("svc:" + key + "|" + s.name) || state.wt.busy.has("svcall:" + key);
+  const live = s.state === "live";
+  const open = (live && s.liveUrl)
+    ? `<a class="wtp-svc-open" href="${esc(s.liveUrl)}" target="_blank" rel="noopener" title="${esc(s.liveUrl)}">${icon("externalLink")}</a>`
+    : "";
+  const ctrl = live
+    ? `<button class="wtp-btn stop wtp-svc-btn" data-act="svc-stop" data-wt="${esc(key)}" data-svc="${esc(s.name)}" ${busy ? "disabled" : ""} aria-label="stop ${esc(s.name)}">${icon("stop")}</button>`
+    : `<button class="wtp-btn run wtp-svc-btn" data-act="svc-start" data-wt="${esc(key)}" data-svc="${esc(s.name)}" ${busy ? "disabled" : ""} title="${esc(s.command)}" aria-label="start ${esc(s.name)}">${icon("play")}</button>`;
+  return `<div class="wtp-svc ${esc(s.state)}">`
+    + `<span class="wtp-svc-dot ${esc(s.state)}"></span>`
+    + `<span class="wtp-svc-name" title="${esc(s.name)}">${esc(s.name)}</span>`
+    + (s.port ? `<span class="wtp-svc-port">:${esc(s.port)}</span>` : "")
+    + `<span class="sp"></span>${open}${ctrl}</div>`;
+}
+
+// The per-worktree run area: the declared services list (rows + Start/Stop all footer) when a
+// manifest is present; otherwise the legacy single auto-detected "dev" command, plus a nudge to
+// declare services. A manifest parse error shows in the usual .wtp-err style.
+function servicesControl(wt, runOpen){
+  if(wt.servicesError){
+    return `<div class="wtp-err"><span class="wtp-err-msg">${esc(wt.servicesError)}</span></div>`;
+  }
+  if(wt.servicesDeclared){
+    const rows = wt.services.map((s) => serviceRow(wt, s)).join("");
+    const anyUp = wt.services.some((s) => s.state === "live" || s.state === "starting");
+    const busyAll = state.wt.busy.has("svcall:" + wt.path);
+    let foot = `<div class="wtp-svc-foot">`
+      + `<button class="wtp-btn wtp-svc-all run" data-act="svc-start-all" data-wt="${esc(wt.path)}" ${busyAll ? "disabled" : ""}>${icon("play")}<span>Start all</span></button>`;
+    if(anyUp) foot += `<button class="wtp-btn stop wtp-svc-all" data-act="svc-stop-all" data-wt="${esc(wt.path)}" ${busyAll ? "disabled" : ""}>Stop all</button>`;
+    foot += `</div>`;
+    return `<div class="wtp-svcs">${rows}${foot}</div>`;
+  }
+  // no manifest — the backward-compatible single Run control, plus a gentle nudge
+  return runControl(wt, runOpen)
+    + `<div class="wtp-svc-nudge">No services declared — ask Claude to set up <code>.pm/services.json</code> (or run <code>/pm:services</code>).</div>`;
+}
+
 // the worktree/checkout indicator — a fixed-width column on the first line, rendered only when
 // a worktree is checked out. Click it to open the same picker as the ghost "+ worktree" button.
 function wtPill(b, wt, menuOpen){
   const on = menuOpen ? " on" : "";
-  const live = wt.serverState === "live" ? " live" : "";
+  const live = wtIsLive(wt) ? " live" : "";
   return `<button class="wtp-pill wtp-trigger${on}" data-act="wtmenu" data-branch="${esc(b.name)}" `
     + `title="checked out in ${esc(wt.path)} — click to change">`
     + `<span class="wtp-pill-dot${live}"></span><span class="wtp-pill-txt">${esc(wtLabel(wt))}</span>`
@@ -907,15 +959,15 @@ function wtpBranchRow(b, worktrees, baseName){
   const wtOnBranch = b.worktreePath ? worktrees.find((x) => x.path === b.worktreePath) : null;
   const checkoutOpen = w.openMenu && w.openMenu.type === "checkout" && w.openMenu.branch === b.name;
   const runOpen = !!(wtOnBranch && w.openMenu && w.openMenu.type === "run" && w.openMenu.wt === wtOnBranch.path);
-  const live = !!(wtOnBranch && wtOnBranch.serverState === "live");
+  const live = !!(wtOnBranch && wtIsLive(wtOnBranch));
   const nm = `<span class="wtp-bname"><span class="k">${icon("branch")}</span><span class="wtp-bname-txt">${esc(b.name)}</span>`
     + (b.isDefault ? `<span class="wtp-def">default</span>` : "") + `</span>`;
 
   let h = `<div class="wtp-brow${live ? " live" : ""}">`;
   h += `<div class="wtp-brow-top">${nm}${divergeChip(b.ahead, baseName)}`
     + (wtOnBranch ? wtPill(b, wtOnBranch, checkoutOpen) : wtGhostBtn(b.name, checkoutOpen)) + `</div>`;
-  if(wtOnBranch) h += `<div class="wtp-brow-run">${runControl(wtOnBranch, runOpen)}</div>`;
-  if(runOpen) h += runMenuHtml(wtOnBranch);
+  if(wtOnBranch) h += `<div class="wtp-brow-run">${servicesControl(wtOnBranch, runOpen)}</div>`;
+  if(runOpen && wtOnBranch && !wtOnBranch.servicesDeclared) h += runMenuHtml(wtOnBranch);
   if(checkoutOpen) h += wtpWtMenu(b.name, worktrees, b.worktreePath);
   return h + `</div>`;
 }
@@ -927,7 +979,7 @@ function panelHtml(worktrees, branches, data){
   const closed = ordered.filter((b) => b.merged && !b.worktreePath && !b.isDefault);
   const closedSet = new Set(closed);
   const active = ordered.filter((b) => !closedSet.has(b));
-  const liveCount = worktrees.reduce((n, x) => n + (x.serverState === "live" ? 1 : 0), 0);
+  const liveCount = worktrees.reduce((n, x) => n + wtLiveCount(x), 0);
   const baseName = data && data.defaultBranch;
 
   let h = `<div class="wtp">`;
@@ -1021,7 +1073,8 @@ async function renderWorktreePanel(force){
 
   const w = state.wt;
   const sig = "wtp:" + JSON.stringify({
-    w: worktrees.map((x) => [x.path, x.branch, x.serverState, (x.servers || []).map((s) => s.port), x.devCommand, x.ahead]),
+    w: worktrees.map((x) => [x.path, x.branch, x.serverState, (x.servers || []).map((s) => s.port), x.devCommand, x.ahead,
+      x.servicesDeclared, x.servicesError, (x.services || []).map((s) => [s.name, s.state])]),
     b: branches.map((x) => [x.name, x.worktreePath, x.merged, x.ahead, x.committedAt]),
     ui: [w.openMenu, w.editCmd, w.error, w.mergedOpen, [...w.busy]],
   });
@@ -1082,6 +1135,55 @@ async function handleWtAction(el){
   }
   if(act === "stop"){
     const r = await apiPost("/api/server/stop", { worktree: wt });
+    w.error = r && r.ok === false ? (r.error || null) : null;
+    renderWorktreePanel(true);
+    setTimeout(() => renderWorktreePanel(true), 800);
+    return;
+  }
+  if(act === "svc-start"){
+    const svc = el.dataset.svc;
+    const bk = "svc:" + wt + "|" + svc;
+    w.busy.add(bk); repaintPanel();
+    const r = await apiPost("/api/service/start", { worktree: wt, name: svc });
+    w.busy.delete(bk);
+    if(r && r.ok === false){
+      const tail = Array.isArray(r.log) && r.log.length ? " — " + r.log[r.log.length - 1] : "";
+      w.error = (svc + ": " + (r.error || "couldn't start")) + tail;
+    } else w.error = null;
+    renderWorktreePanel(true);
+    setTimeout(() => renderWorktreePanel(true), 1500); // catch the port once it binds
+    return;
+  }
+  if(act === "svc-stop"){
+    const svc = el.dataset.svc;
+    const bk = "svc:" + wt + "|" + svc;
+    w.busy.add(bk); repaintPanel();
+    const r = await apiPost("/api/service/stop", { worktree: wt, name: svc });
+    w.busy.delete(bk);
+    w.error = r && r.ok === false ? (r.error || null) : null;
+    renderWorktreePanel(true);
+    setTimeout(() => renderWorktreePanel(true), 800);
+    return;
+  }
+  if(act === "svc-start-all"){
+    const bk = "svcall:" + wt;
+    w.busy.add(bk); repaintPanel();
+    const r = await apiPost("/api/services/start-all", { worktree: wt });
+    w.busy.delete(bk);
+    const fail = r && Array.isArray(r.results) ? r.results.find((x) => x.ok === false) : null;
+    if(fail){
+      const tail = Array.isArray(fail.log) && fail.log.length ? " — " + fail.log[fail.log.length - 1] : "";
+      w.error = (fail.name + ": " + (fail.error || "failed")) + tail;
+    } else w.error = r && r.ok === false ? (r.error || "couldn't start services") : null;
+    renderWorktreePanel(true);
+    setTimeout(() => renderWorktreePanel(true), 1500);
+    return;
+  }
+  if(act === "svc-stop-all"){
+    const bk = "svcall:" + wt;
+    w.busy.add(bk); repaintPanel();
+    const r = await apiPost("/api/services/stop-all", { worktree: wt });
+    w.busy.delete(bk);
     w.error = r && r.ok === false ? (r.error || null) : null;
     renderWorktreePanel(true);
     setTimeout(() => renderWorktreePanel(true), 800);

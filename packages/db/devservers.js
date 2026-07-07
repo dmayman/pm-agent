@@ -1,10 +1,11 @@
 // In-process registry of dev servers the operator UI has started. The observer is otherwise
 // read-only; this is the one place it spawns processes. Each entry is keyed by the worktree
-// path it was launched in, tracks the child's process *group* (so we can stop the whole tree),
-// and keeps a small ring buffer of recent output for the panel. Liveness of the actual port is
-// still discovered via lsof (see worktrees.js) — this registry only knows what *we* launched,
-// so a server started in a terminal still shows as live, it just can't be stopped from here
-// unless we also find its listening pid.
+// path PLUS the service name (a worktree can run several named services — an API and a UI, say),
+// tracks the child's process *group* (so we can stop the whole tree), and keeps a small ring
+// buffer of recent output for the panel. Liveness of the actual port is still discovered via
+// lsof (see worktrees.js) — this registry only knows what *we* launched, so a server started in
+// a terminal still shows as live, it just can't be stopped from here unless we also find its
+// listening pid.
 
 import { spawn, execFileSync } from "node:child_process";
 import path from "node:path";
@@ -22,12 +23,20 @@ function childEnv() {
   return { ...process.env, PATH };
 }
 
-const registry = new Map(); // worktreePath -> entry
+const registry = new Map(); // "<worktreePath> <serviceName>" -> entry
+const DEFAULT_SERVICE = "dev"; // the fallback single-command name (no-manifest path)
 const LOG_LINES = 60;
 // How long start waits to catch a fast-failing command (missing script, wrong dir, port in use,
 // non-zero exit) before reporting success. Long enough to catch spawn errors and immediate exits;
 // short enough that a healthy `npm run dev` (which stays up) returns promptly.
 const START_GRACE_MS = 1500;
+
+// The registry key: "<worktreePath> <serviceName>". We never parse it back apart — each entry
+// also stores its worktreePath + name, so per-worktree iteration (trackedServiceNames) matches on
+// those fields rather than string-splitting the key, so a path containing a space can't confuse it.
+function keyFor(worktreePath, serviceName) {
+  return worktreePath + " " + (serviceName || DEFAULT_SERVICE);
+}
 
 function pushLog(entry, buf) {
   const text = buf.toString();
@@ -38,17 +47,13 @@ function pushLog(entry, buf) {
   }
 }
 
-export function isTracked(worktreePath) {
-  const e = registry.get(worktreePath);
-  return !!(e && !e.exited);
-}
-
-// A compact status for one worktree: are we running it, is it still booting, last output.
-export function serverStatus(worktreePath) {
-  const e = registry.get(worktreePath);
+// A compact status for one named service in a worktree: are we running it, still booting, output.
+export function serviceStatus(worktreePath, serviceName) {
+  const e = registry.get(keyFor(worktreePath, serviceName));
   if (!e) return null;
   return {
     tracked: true,
+    name: e.name,
     pid: e.pid,
     command: e.command,
     exited: e.exited,
@@ -58,17 +63,35 @@ export function serverStatus(worktreePath) {
   };
 }
 
-export async function startDevServer(worktreePath, command) {
-  if (!command || !command.trim()) return { ok: false, error: "no dev command configured" };
-  const existing = registry.get(worktreePath);
+// Names of every service this process is currently supervising (not exited) for a worktree.
+export function trackedServiceNames(worktreePath) {
+  const names = [];
+  for (const e of registry.values()) {
+    if (e.worktreePath === worktreePath && !e.exited) names.push(e.name);
+  }
+  return names;
+}
+
+// Start a named service in a worktree. `service = {name, command, cwd, port}` — cwd is resolved
+// relative to the worktree root (default "."). Reuses the shared spawn options and the grace
+// window that surfaces a fast-failing command's real error + log tail instead of a false success.
+export async function startService(worktreePath, service) {
+  const name = (service && service.name) || DEFAULT_SERVICE;
+  const command = service && service.command;
+  if (!command || !String(command).trim()) return { ok: false, error: "no command configured" };
+
+  const key = keyFor(worktreePath, name);
+  const existing = registry.get(key);
   if (existing && !existing.exited) return { ok: true, already: true, pid: existing.pid };
+
+  const cwd = path.join(worktreePath, (service && service.cwd) || ".");
 
   let proc;
   try {
     // detached:true puts the child in its own process group so a later kill(-pid) takes the
     // whole tree (npm -> node -> …), not just the npm shim.
     proc = spawn(command, {
-      cwd: worktreePath,
+      cwd,
       shell: true,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
@@ -81,6 +104,8 @@ export async function startDevServer(worktreePath, command) {
   const entry = {
     proc,
     pid: proc.pid,
+    name,
+    worktreePath,
     command,
     startedAt: new Date().toISOString(),
     log: [],
@@ -106,7 +131,7 @@ export async function startDevServer(worktreePath, command) {
     pushLog(entry, "spawn error: " + entry.spawnError);
     settle();
   });
-  registry.set(worktreePath, entry);
+  registry.set(key, entry);
 
   // Wait out the grace window: if the command fails fast we surface the real reason + log tail;
   // if it's still alive it's presumed to be booting (lsof-based liveness in worktrees.js takes
@@ -116,7 +141,7 @@ export async function startDevServer(worktreePath, command) {
   if (entry.exited) {
     const why = entry.spawnError
       ? entry.spawnError
-      : `dev command exited (code ${entry.exitCode}) before it came up`;
+      : `command exited (code ${entry.exitCode}) before it came up`;
     return { ok: false, error: why, log: entry.log.slice(-8), exitCode: entry.exitCode };
   }
   return { ok: true, pid: proc.pid, log: entry.log.slice(-8) };
@@ -149,19 +174,41 @@ function killGroup(pid) {
   return ok;
 }
 
-// Stop a worktree's dev server. Kills the process group we launched, and also SIGTERMs any
-// extra listening pids the caller detected in that worktree (covers servers started outside
-// the dashboard). Returns whether anything was signalled.
-export function stopDevServer(worktreePath, detectedPids = []) {
+// Stop one named service. Kills the process group we launched for it, and also SIGTERMs any extra
+// listening pids the caller detected on that service's port (covers servers started outside the
+// dashboard). Returns whether anything was signalled.
+export function stopService(worktreePath, serviceName, detectedPids = []) {
   let killed = false;
-  const entry = registry.get(worktreePath);
+  const key = keyFor(worktreePath, serviceName);
+  const entry = registry.get(key);
   if (entry && !entry.exited && killGroup(entry.pid)) killed = true;
-  registry.delete(worktreePath);
-  // Group-kill any listener we detected in that worktree too — covers servers started outside the
+  registry.delete(key);
+  // Group-kill any listener we detected on that port too — covers servers started outside the
   // dashboard, and ones a previous serve process launched (its in-memory registry didn't survive
   // the restart). A single-pid SIGTERM used to leave the npm parent alive holding the port.
   for (const pid of detectedPids) {
     if (pid && killGroup(pid)) killed = true;
   }
   return { ok: killed };
+}
+
+// ---- backward-compatible single-command wrappers ---------------------------
+// The no-manifest fallback path (and any existing callers) talk to one anonymous "dev" service.
+
+export function isTracked(worktreePath) {
+  const e = registry.get(keyFor(worktreePath, DEFAULT_SERVICE));
+  return !!(e && !e.exited);
+}
+
+export function serverStatus(worktreePath) {
+  return serviceStatus(worktreePath, DEFAULT_SERVICE);
+}
+
+export async function startDevServer(worktreePath, command) {
+  if (!command || !command.trim()) return { ok: false, error: "no dev command configured" };
+  return startService(worktreePath, { name: DEFAULT_SERVICE, command, cwd: "." });
+}
+
+export function stopDevServer(worktreePath, detectedPids = []) {
+  return stopService(worktreePath, DEFAULT_SERVICE, detectedPids);
 }
