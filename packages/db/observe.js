@@ -178,7 +178,16 @@ export async function observeWorker(jobFile) {
         refs: e.refs && typeof e.refs === "object" ? e.refs : null,
         source: "observer",
       });
-      if (threadId) touched.add(threadId);
+      if (threadId) {
+        touched.add(threadId);
+        // Bridge issue→initiative membership: the event names its thread AND a GitHub issue,
+        // but membership lives in issue_titles.thread_id, which logEvent doesn't touch. Attach
+        // it as a SOFT link so the initiative shows the issue (and the recluster can re-home).
+        const issueNum = Number(e.refs?.issue);
+        if (Number.isInteger(issueNum) && issueNum > 0) {
+          S.linkIssueToThread(db, repo.id, issueNum, threadId);
+        }
+      }
     }
 
     // Bridge the git/GitHub side: a turn may have closed an issue, merged a PR, or pushed a
