@@ -153,11 +153,16 @@ export function readServices(worktreePath) {
   return { services, error: null };
 }
 
-// Enrich one declared service with its live state, from (a) the lsof port scan already attached
-// to the worktree and (b) this process's own registry for services we launched. Port-detected
-// liveness wins; a service we spawned but that hasn't bound its port yet reads as "starting";
-// a port-less service falls back purely to the registry (tracked → live, since we can't probe it).
-function enrichService(wt, s) {
+// Enrich one declared service with its live state, from (a) a global scan of listening ports and
+// (b) this process's own registry for services we launched. Port-detected liveness wins; a
+// service we spawned but that hasn't bound its port yet reads as "starting"; a port-less service
+// falls back purely to the registry (tracked → live, since we can't probe it).
+//
+// A declared port is authoritative, so we check whether *anything* is listening on it anywhere
+// (`listeningByPort`) rather than only a process whose cwd sits under the worktree. Docker/Colima
+// publish a container's port via a proxy/ssh-forward process whose cwd is elsewhere, so the
+// cwd-attribution used for auto-discovered servers would never mark a containerized DB live.
+function enrichService(wt, s, listeningByPort) {
   const out = {
     name: s.name,
     command: s.command,
@@ -169,11 +174,11 @@ function enrichService(wt, s) {
     pid: null,
     liveUrl: null,
   };
-  const listener = s.port != null ? wt.servers.find((sv) => sv.port === s.port) : null;
+  const listenPid = s.port != null && listeningByPort ? listeningByPort.get(s.port) : undefined;
   const tracked = serviceStatus(wt.path, s.name);
-  if (listener) {
+  if (listenPid !== undefined) {
     out.state = "live";
-    out.pid = listener.pid;
+    out.pid = listenPid;
     out.liveUrl = s.url || "http://localhost:" + s.port + (s.health || "");
   } else if (tracked && !tracked.exited) {
     // We launched it and it's still alive. With a port it's booting (not yet bound); without a
@@ -227,8 +232,7 @@ function pidCwds(pids) {
 // Attach dev servers to the worktree whose path is the longest prefix of the listening
 // process's cwd (so a server in a linked worktree isn't credited to the tree that contains
 // it on disk). Returns whether the scan actually ran.
-function attachServers(worktrees, { skipPid, skipPort } = {}) {
-  const sockets = listeningSockets();
+function attachServers(worktrees, sockets, { skipPid, skipPort } = {}) {
   if (sockets === null) return false;
   const relevant = sockets.filter((s) => s.pid !== skipPid && s.port !== skipPort);
   const cwds = pidCwds([...new Set(relevant.map((s) => s.pid))]);
@@ -286,16 +290,26 @@ export function worktreeReport(repo, { skipPid, skipPort, devCommand } = {}) {
     };
   });
 
-  const serverScanned = attachServers(worktrees, { skipPid, skipPort });
+  // One lsof scan feeds both the cwd-attributed auto-discovery (attachServers) and the global
+  // port→pid map declared services use for liveness.
+  const sockets = listeningSockets();
+  const serverScanned = attachServers(worktrees, sockets, { skipPid, skipPort });
+  const listeningByPort = new Map();
+  if (sockets) {
+    for (const s of sockets) {
+      if (s.pid === skipPid || s.port === skipPort) continue;
+      if (!listeningByPort.has(s.port)) listeningByPort.set(s.port, s.pid);
+    }
+  }
 
   // Per-worktree declared services (from .pm/services.json), each enriched with live state.
-  // Runs after attachServers so the lsof port scan is available for liveness. `devCommand` stays
-  // on each worktree for the no-manifest fallback the panel still renders.
+  // Runs after the scan so port liveness is available. `devCommand` stays on each worktree for
+  // the no-manifest fallback the panel still renders.
   for (const wt of worktrees) {
     const svc = readServices(wt.path);
     wt.servicesError = svc.error || null;
     wt.servicesDeclared = Array.isArray(svc.services) && svc.services.length > 0;
-    wt.services = (svc.services || []).map((s) => enrichService(wt, s));
+    wt.services = (svc.services || []).map((s) => enrichService(wt, s, listeningByPort));
   }
 
   // Which branches are merged into the default — those with no worktree are "closed".
