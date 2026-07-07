@@ -649,6 +649,27 @@ function stopPreview({ quiet = false } = {}) {
 // click a link and verify a change before merging, without touching your always-on observer or
 // its data. Idempotent: relaunching restarts + re-seeds. `--stop` tears it down; `--fresh` starts
 // from an empty DB instead of copying prod; `--port N` overrides the port (default 4478).
+// Poll until `pid` is gone (or the timeout lapses), so a restart never races the old server for
+// the port. Naps ~80ms per turn via a throwaway node -e (no shell); this path runs briefly.
+function waitForExit(pid, timeoutMs = 4000) {
+  if (!pid) return;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!pidAlive(pid)) return;
+    spawnSync(process.execPath, ["-e", "setTimeout(()=>{},80)"]);
+  }
+}
+
+// The URL of your real (always-on) observer, so the preview can link back to it. The real `serve`
+// records it in observer.json on startup; fall back to the default port if it hasn't.
+function parentObserverUrl(home) {
+  try {
+    const j = JSON.parse(readFileSync(path.join(home, "observer.json"), "utf8"));
+    if (j && j.url) return j.url;
+  } catch {}
+  return "http://localhost:4477";
+}
+
 function cmdPreview(rest) {
   if (rest.includes("--stop") || rest.includes("--remove")) {
     stopPreview();
@@ -657,22 +678,49 @@ function cmdPreview(rest) {
   const home = realHome();
   mkdirSync(home, { recursive: true });
 
-  const tree = process.cwd();
-  if (!existsSync(path.join(tree, "bin", "pm-agent.js"))) {
+  const mainTree = process.cwd();
+  if (!existsSync(path.join(mainTree, "bin", "pm-agent.js"))) {
     fail("Run `pm-agent preview` from the pm-agent repo checkout you want to preview.");
   }
   const branch =
-    runLocal("git", ["-C", tree, "rev-parse", "--abbrev-ref", "HEAD"], {
+    rest.find((a) => !a.startsWith("--")) ||
+    runLocal("git", ["-C", mainTree, "rev-parse", "--abbrev-ref", "HEAD"], {
       capture: true,
       tolerate: true,
-    }).stdout || "(detached)";
+    }).stdout ||
+    "HEAD";
+  if (!runLocal("git", ["-C", mainTree, "rev-parse", "--verify", "--quiet", branch], { capture: true, tolerate: true }).ok) {
+    fail(`No such branch: ${branch}`);
+  }
 
   const portArg = rest.find((a) => a.startsWith("--port"));
   const port =
     Number((portArg && (portArg.split("=")[1] || rest[rest.indexOf(portArg) + 1])) || 0) || 4478;
 
-  // Fresh start: kill any prior preview, then reset the scratch home and re-seed from prod.
+  // Stop any prior preview and WAIT for it to release the port before we rebind it.
+  let old = null;
+  try {
+    old = JSON.parse(readFileSync(path.join(home, "preview.json"), "utf8"));
+  } catch {}
   stopPreview({ quiet: true });
+  if (old && old.pid) waitForExit(old.pid);
+
+  // The dedicated preview worktree, checked out DETACHED at the branch tip (detached so it can
+  // mirror a branch that's also checked out in your main tree; git forbids two live checkouts).
+  const previewTree = path.join(home, "preview-tree");
+  if (existsSync(path.join(previewTree, ".git"))) {
+    const sw = runLocal("git", ["-C", previewTree, "checkout", "--detach", branch], { capture: true, tolerate: true });
+    if (!sw.ok) fail(`Couldn't point the preview worktree at ${branch}. Try: pm-agent preview --stop`);
+  } else {
+    rmSync(previewTree, { recursive: true, force: true });
+    const add = runLocal("git", ["-C", mainTree, "worktree", "add", "--detach", previewTree, branch], {
+      capture: true,
+      tolerate: true,
+    });
+    if (!add.ok) fail(`Couldn't create the preview worktree at ${previewTree}.`);
+  }
+
+  // Reset the scratch home and re-seed from prod (unless --fresh).
   const scratchHome = path.join(home, "preview-home");
   rmSync(scratchHome, { recursive: true, force: true });
   mkdirSync(scratchHome, { recursive: true });
@@ -684,18 +732,21 @@ function cmdPreview(rest) {
     }
   }
 
-  // Detached `serve` from this checkout, pointed at the scratch home and flagged as a preview.
+  // Detached `serve` from the preview worktree, pointed at the scratch home and flagged as a
+  // preview (with the branch label and a link back to your real observer).
   const log = path.join(home, "preview.log");
   const out = openSync(log, "a");
-  const child = spawn(process.execPath, [path.join(HERE, "pm-agent.js"), "serve", "--port", String(port)], {
-    cwd: tree,
+  const child = spawn(process.execPath, [path.join(previewTree, "bin", "pm-agent.js"), "serve", "--port", String(port)], {
+    cwd: previewTree,
     detached: true,
     stdio: ["ignore", out, out],
     env: {
       ...process.env,
       PM_AGENT_HOME: scratchHome,
+      PM_AGENT_REAL_HOME: home,
       PM_AGENT_PREVIEW: "1",
       PM_AGENT_PREVIEW_BRANCH: branch,
+      PM_AGENT_PARENT_URL: parentObserverUrl(home),
     },
   });
   child.unref();
@@ -703,13 +754,14 @@ function cmdPreview(rest) {
   const url = `http://localhost:${port}`;
   writeFileSync(
     path.join(home, "preview.json"),
-    JSON.stringify({ url, branch, port, pid: child.pid, startedAt: new Date().toISOString() })
+    JSON.stringify({ url, branch, port, pid: child.pid, tree: previewTree, startedAt: new Date().toISOString() })
   );
   process.stdout.write(
     `\n🔬 Preview live  ·  branch ${branch}\n` +
-      `  → ${url}\n\n` +
+      `  -> ${url}\n\n` +
       `  ${fresh ? "Empty scratch DB" : "Scratch DB copied from your real ledger"} — changes here never touch prod.\n` +
-      `  Your real observer is untouched, and now links to this preview.\n` +
+      `  Serving the committed state of ${branch} from a hidden worktree; your real checkout is untouched.\n` +
+      `  Switch branches from the preview's amber bar, or:  pm-agent preview <branch>\n` +
       `  Stop it with:  pm-agent preview --stop\n  Logs: ${log}\n`
   );
 }

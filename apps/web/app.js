@@ -1319,10 +1319,11 @@ async function loadMeta(){
   }catch(e){ /* meta is best-effort chrome; views still render */ }
 }
 
-// Preview mode has two faces. When THIS dashboard is the preview, pin a loud banner so it's never
-// mistaken for the real ledger. When it's the real dashboard and a preview is running, the link is
-// surfaced inside the Branches panel (see panelHtml) — nothing to do here but clear any banner.
+// Preview mode has two faces. When THIS dashboard is the preview, pin a loud banner (with a branch
+// picker to re-point it) so it's never mistaken for the real ledger. Either way, render the
+// top-right environment switch that toggles prod ↔ preview.
 function applyPreviewChrome(preview){
+  state.preview = preview || null;
   let banner = $("#previewBanner");
   if(preview && preview.self){
     document.body.classList.add("preview-mode");
@@ -1333,12 +1334,127 @@ function applyPreviewChrome(preview){
     }
     banner.innerHTML = `<span class="pv-dot"></span>`
       + `<span class="pv-label">PREVIEW</span>`
-      + `<span class="pv-branch">${esc(preview.branch || "branch")}</span>`
+      + `<div class="pv-branch-wrap">`
+      +   `<button class="pv-branch" data-act="pvbranch" title="preview a different branch">`
+      +     `${esc(preview.branch || "branch")}<span class="pv-caret">▾</span></button>`
+      +   `<div class="pv-branch-menu" id="pvBranchMenu" hidden></div>`
+      + `</div>`
       + `<span class="pv-note">scratch copy of your ledger — not the real one</span>`;
   }else{
     document.body.classList.remove("preview-mode");
     if(banner) banner.remove();
   }
+  renderEnvSwitch(preview);
+  wirePreviewMenus();
+}
+
+// The top-right environment switch. Shows the current environment and, in its menu, a link to the
+// other one — so prod and its live preview are one click apart on both dashboards. Hidden on the
+// real dashboard when no preview is running (nothing to switch to).
+function renderEnvSwitch(preview){
+  let el = $("#envSwitch");
+  let isPrev, current, other;
+  if(preview && preview.self){
+    isPrev = true;
+    current = { label:"Preview", sub: preview.branch || "" };
+    other = preview.parentUrl ? { label:"Production", sub:"", url: preview.parentUrl } : null;
+  }else if(preview && !preview.self && preview.link){
+    isPrev = false;
+    current = { label:"Production", sub:"" };
+    other = { label:"Preview", sub: preview.link.branch || "", url: preview.link.url };
+  }else{
+    document.body.classList.remove("has-envswitch");
+    if(el) el.remove();
+    return;
+  }
+  if(!el){ el = document.createElement("div"); el.id = "envSwitch"; document.body.appendChild(el); }
+  el.className = isPrev ? "env-preview" : "env-prod";
+  document.body.classList.toggle("has-envswitch", !isPrev);
+  const opt = (o, cur) => o
+    ? `<a class="env-opt${cur?" is-current":""}" ${cur?"":`href="${esc(o.url)}"`}>`
+      + `<span class="env-dot${cur?"":" alt"}"></span><span class="env-opt-txt">${esc(o.label)}`
+      + `${o.sub?` <span class="env-sub">${esc(o.sub)}</span>`:""}</span>${cur?`<span class="env-check">✓</span>`:""}</a>`
+    : `<div class="env-opt disabled">No preview running</div>`;
+  el.innerHTML = `<button class="env-btn" data-act="envtoggle" aria-haspopup="true">`
+    + `<span class="env-dot"></span><span class="env-cur">${esc(current.label)}`
+    + `${current.sub?` <span class="env-sub">${esc(current.sub)}</span>`:""}</span><span class="env-caret">▾</span></button>`
+    + `<div class="env-menu" id="envMenu" hidden>`
+    +   opt({ ...current }, true)
+    +   opt(other, false)
+    + `</div>`;
+}
+
+// One document-level handler drives both the env menu and the preview branch picker (open/close,
+// click-away, and the actual branch switch). Attached once.
+let pvWired = false;
+function wirePreviewMenus(){
+  if(pvWired) return;
+  pvWired = true;
+  document.addEventListener("click", async (e) => {
+    const envMenu = $("#envMenu"), pvMenu = $("#pvBranchMenu");
+    const branchOpt = e.target.closest('[data-act="pvswitch"]');
+    if(branchOpt){ e.preventDefault(); pvSwitchBranch(branchOpt.dataset.branch); return; }
+    if(e.target.closest('[data-act="envtoggle"]')){
+      e.preventDefault();
+      if(envMenu) envMenu.hidden = !envMenu.hidden;
+      if(pvMenu) pvMenu.hidden = true;
+      return;
+    }
+    if(e.target.closest('[data-act="pvbranch"]')){
+      e.preventDefault();
+      if(pvMenu){ pvMenu.hidden = !pvMenu.hidden; if(!pvMenu.hidden) await fillPvBranchMenu(pvMenu); }
+      if(envMenu) envMenu.hidden = true;
+      return;
+    }
+    if(envMenu && !e.target.closest("#envSwitch")) envMenu.hidden = true;
+    if(pvMenu && !e.target.closest(".pv-branch-wrap")) pvMenu.hidden = true;
+  });
+}
+
+// Fill the branch picker from live git state (the same /api/worktrees the panel uses). Open
+// branches (unmerged) plus the current one; current first, disabled.
+async function fillPvBranchMenu(menu){
+  menu.innerHTML = `<div class="pv-menu-msg">loading…</div>`;
+  let data;
+  try{ data = await api("/api/worktrees"); }
+  catch(e){ menu.innerHTML = `<div class="pv-menu-msg">unavailable</div>`; return; }
+  const cur = state.preview && state.preview.branch;
+  const branches = (data.branches || [])
+    .filter((b) => !b.merged || b.name === cur)
+    .sort((a, b) => (a.name === cur ? 0 : 1) - (b.name === cur ? 0 : 1) || String(a.name).localeCompare(b.name));
+  menu.innerHTML = branches.map((b) => {
+    const isCur = b.name === cur;
+    return `<button class="pv-menu-opt${isCur?" is-current":""}" data-act="pvswitch" data-branch="${esc(b.name)}"${isCur?" disabled":""}>`
+      + `<span class="pv-dot${isCur?"":" alt"}"></span><span class="pv-menu-name">${esc(b.name)}</span>`
+      + (b.isDefault?`<span class="pv-menu-tag">default</span>`:"")
+      + (isCur?`<span class="env-check">✓</span>`:"")
+      + `</button>`;
+  }).join("") || `<div class="pv-menu-msg">no branches</div>`;
+}
+
+// Re-point the preview at another branch: tell the server to relaunch, show a restarting overlay,
+// then poll until the preview is back up on the new branch and reload.
+async function pvSwitchBranch(name){
+  if(!name || (state.preview && name === state.preview.branch)) return;
+  const pvMenu = $("#pvBranchMenu"); if(pvMenu) pvMenu.hidden = true;
+  showPreviewSwitching(name);
+  try{ await apiPost("/api/preview/switch", { branch:name }); }catch(e){}
+  for(let i=0;i<50;i++){
+    await new Promise((r)=>setTimeout(r,300));
+    try{
+      const m = await fetch("/api/meta",{cache:"no-store"}).then((r)=>r.json());
+      if(m && m.preview && m.preview.self && m.preview.branch === name){ location.reload(); return; }
+    }catch(e){ /* server mid-restart */ }
+  }
+  location.reload();
+}
+
+function showPreviewSwitching(name){
+  let o = $("#pvSwitching");
+  if(!o){ o = document.createElement("div"); o.id = "pvSwitching"; document.body.appendChild(o); }
+  o.innerHTML = `<div class="pvs-card"><div class="pvs-spin"></div>`
+    + `<div class="pvs-txt">Switching preview to <b>${esc(name)}</b></div>`
+    + `<div class="pvs-sub">restarting the preview server…</div></div>`;
 }
 
 // ---- project switcher -------------------------------------------------------

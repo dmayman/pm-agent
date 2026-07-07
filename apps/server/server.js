@@ -4,8 +4,9 @@
 // managing (Claude owns the ledger; see docs/ledger.md).
 
 import http from "node:http";
+import { spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import * as S from "../../packages/db/store.js";
@@ -67,13 +68,24 @@ function pidAlive(pid) {
 }
 function previewInfo() {
   if (process.env.PM_AGENT_PREVIEW === "1") {
-    return { self: true, branch: process.env.PM_AGENT_PREVIEW_BRANCH || null };
+    // The preview knows its own branch and a link back to the real observer (for the env toggle).
+    return {
+      self: true,
+      branch: process.env.PM_AGENT_PREVIEW_BRANCH || null,
+      parentUrl: process.env.PM_AGENT_PARENT_URL || null,
+    };
   }
+  const j = livePreview();
+  return j ? { self: false, link: { url: j.url, branch: j.branch, port: j.port } } : null;
+}
+
+// The rendezvous the `preview` command drops in the real home, but only if its process is alive.
+// Read by the real server both to link to a running preview and to hide its worktree from the panel.
+function livePreview() {
+  if (process.env.PM_AGENT_PREVIEW === "1") return null;
   try {
     const j = JSON.parse(readFileSync(path.join(S.pmHome(), "preview.json"), "utf8"));
-    if (j && j.pid && pidAlive(j.pid)) {
-      return { self: false, link: { url: j.url, branch: j.branch, port: j.port } };
-    }
+    if (j && j.pid && pidAlive(j.pid)) return j;
   } catch {
     /* no preview running — the common case */
   }
@@ -194,10 +206,12 @@ function api(db, repo, url, cwdRepo, serverPort) {
   // with which servers *this* process is supervising (so the panel can show "starting…").
   if (p === "/api/worktrees") {
     const override = S.effectiveConfig(db, repo.slug, "devCommand", null);
+    const lp = livePreview();
     const report = worktreeReport(repo, {
       skipPid: process.pid,
       skipPort: serverPort,
       devCommand: override,
+      excludePaths: lp && lp.tree ? [lp.tree] : undefined,
     });
     for (const wt of report.worktrees) {
       const tracked = serverStatus(wt.path);
@@ -240,6 +254,30 @@ function listenerPidsFor(repo, worktree, port, serverPort) {
 async function writeApi(db, repo, url, body, serverPort) {
   const p = url.pathname;
   const b = body || {};
+
+  // Re-point THIS preview at another branch. Only valid on a preview server. Relaunches `preview`
+  // (idempotent: it stops this server, re-checks-out the hidden worktree, and rebinds the same
+  // port), so the UI just waits a beat and reloads. The real home is threaded in via env so the
+  // child writes the rendezvous where the real observer looks (not the scratch home).
+  if (p === "/api/preview/switch") {
+    if (process.env.PM_AGENT_PREVIEW !== "1") return { __status: 403, error: "not a preview server" };
+    const target = String(b.branch || "").trim();
+    if (!target) return { __status: 400, error: "branch required" };
+    const cli = path.join(process.cwd(), "bin", "pm-agent.js");
+    const child = spawn(process.execPath, [cli, "preview", target, "--port", String(serverPort)], {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: "ignore",
+      env: {
+        ...process.env,
+        PM_AGENT_HOME: process.env.PM_AGENT_REAL_HOME || "",
+        PM_AGENT_PREVIEW: "",
+        PM_AGENT_PREVIEW_BRANCH: "",
+      },
+    });
+    child.unref();
+    return { ok: true, branch: target };
+  }
 
   if (p === "/api/worktree/create") {
     return createWorktree(repo, b.branch);
@@ -507,6 +545,16 @@ export function serve({ port = 4477, cwd = process.cwd() } = {}) {
   });
 
   server.listen(port, () => {
+    // Record the real observer's URL so `pm-agent preview` can link the preview back here (the env
+    // toggle). Only the real server does this — a preview must not overwrite the parent's pointer.
+    if (process.env.PM_AGENT_PREVIEW !== "1") {
+      try {
+        writeFileSync(
+          path.join(S.pmHome(), "observer.json"),
+          JSON.stringify({ url: observerAlias(port) || `http://localhost:${port}`, port })
+        );
+      } catch {}
+    }
     // If the http://observer redirect is wired up (scripts/observer-hostname-setup.sh),
     // it targets the default port — so lead with the pretty URL only when we bound it.
     const alias = observerAlias(port);
