@@ -985,13 +985,6 @@ function panelHtml(worktrees, branches, data){
   let h = `<div class="wtp">`;
   h += `<div class="wtp-head"><span class="wtp-title">Branches</span>`
     + `<span class="wtp-sub">${liveCount ? `${liveCount} server${liveCount === 1 ? "" : "s"} live` : `${active.length}`}</span></div>`;
-  // A live preview of some branch, running elsewhere — link straight to it.
-  const pv = state.meta && state.meta.preview;
-  if(pv && !pv.self && pv.link){
-    h += `<a class="wtp-preview" href="${esc(pv.link.url)}" target="_blank" rel="noopener" title="open the preview dashboard">`
-      + `<span class="pv-dot"></span><span class="wtp-preview-txt">Preview live · <b>${esc(pv.link.branch || "")}</b></span>`
-      + `<span class="wtp-preview-go">↗</span></a>`;
-  }
   if(w.error) h += `<div class="wtp-err"><span class="wtp-err-msg">${esc(w.error)}</span><button class="wtp-x" data-act="dismiss" aria-label="dismiss">${icon("x")}</button></div>`;
   if(data && !data.serverScanned) h += `<div class="wtp-note">dev-server scan unavailable (lsof)</div>`;
 
