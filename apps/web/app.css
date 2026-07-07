@@ -578,13 +578,16 @@ a.ref:hover .k{ color:var(--ink-mute); }
 .view:has(.work-wrap){ max-width:none; }
 .work-wrap{ display:flex; gap:34px; align-items:flex-start; }
 .work-col{ flex:1 1 auto; min-width:0; max-width:960px; }
-.work-aside{ flex:none; width:344px; margin-left:auto; position:sticky; top:12px;
-  align-self:flex-start; max-height:calc(100vh - 116px); overflow-y:auto; overflow-x:hidden;
+.work-aside{ flex:none; width:344px; margin-left:auto;
+  position:sticky; top:calc(var(--topbar-h) + 14px); align-self:flex-start;
+  max-height:calc(100vh - var(--topbar-h) - 28px); overflow-y:auto; overflow-x:hidden;
   padding-left:26px; border-left:1px solid var(--line); }
 .work-aside::-webkit-scrollbar{ width:7px; }
 .work-aside::-webkit-scrollbar-thumb{ background:var(--line-strong); border-radius:8px; }
 
-.wtp{ animation:rise .4s cubic-bezier(.2,.7,.2,1) both; }
+/* Deliberately no entrance animation: .wtp wraps the position:fixed worktree picker, and any
+   lingering animation transform would become the picker's containing block and misplace it.
+   (The panel also repaints on every toggle, so a re-firing entrance would flash each time.) */
 .wtp-head{ display:flex; align-items:baseline; gap:9px; margin-bottom:12px; }
 .wtp-head.mt{ margin-top:26px; }
 .wtp-title{ font-size:11px; font-weight:600; letter-spacing:0.1em; text-transform:uppercase;
@@ -603,20 +606,10 @@ a.ref:hover .k{ color:var(--ink-mute); }
   font-size:14px; line-height:1; padding:0; }
 .wtp-x:hover{ color:var(--ink); }
 
-.wtp-item{ position:relative; padding:11px 12px 12px; margin-bottom:9px; border-radius:11px;
-  background:var(--bg-1); border:1px solid var(--line); }
-.wtp-item.live{ border-color:color-mix(in srgb, var(--t-built) 30%, var(--line-strong)); }
-.wtp-row1{ display:flex; align-items:center; gap:8px; margin-bottom:5px; }
-.wtp-branch{ font-family:var(--mono); font-size:12px; color:var(--ink); font-weight:600;
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
-.wtp-branch.detached{ color:var(--ink-mute); font-style:italic; font-weight:400; }
-.wtp-branch .k{ color:var(--ink-whisper); margin-right:4px; font-weight:400; }
-.wtp-tag{ flex:none; font-family:var(--mono); font-size:8.5px; letter-spacing:0.06em;
-  text-transform:uppercase; padding:2px 6px; border-radius:20px; }
-.wtp-tag.here{ color:var(--t-built); border:1px solid color-mix(in srgb, var(--t-built) 36%, transparent); }
-.wtp-tag.main{ color:var(--ink-mute); border:1px solid var(--line-strong); }
-.wtp-path{ font-family:var(--mono); font-size:10px; color:var(--ink-mute); margin-bottom:9px;
-  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* one-line orientation: where the main worktree sits + how many linked trees exist */
+.wtp-summary{ font-family:var(--mono); font-size:10.5px; color:var(--ink-mute);
+  margin:-4px 0 16px; line-height:1.5; }
+.wtp-summary .k{ color:var(--ink-whisper); margin-right:1px; }
 
 .wtp-srv{ display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
 .wtp-btn{ font-family:var(--mono); font-size:10.5px; padding:4px 10px; border-radius:7px;
@@ -655,26 +648,39 @@ a.ref:hover .k{ color:var(--ink-mute); }
   background:var(--bg); border:1px solid var(--line-strong); border-radius:7px; padding:5px 8px; }
 .wtp-input:focus{ outline:none; border-color:color-mix(in srgb, var(--t-built) 40%, transparent); }
 
-.wtp-brow{ display:flex; align-items:center; gap:8px; padding:6px 2px; position:relative;
-  border-bottom:1px solid var(--line); }
+.wtp-brow{ padding:8px 2px; border-bottom:1px solid var(--line); }
 .wtp-brow:last-child{ border-bottom:none; }
+.wtp-brow.has-wt{ padding:10px 10px 11px; margin:5px 0; border:1px solid var(--line);
+  border-radius:11px; background:var(--bg-1); }
+.wtp-brow.live{ border-color:color-mix(in srgb, var(--t-built) 30%, var(--line-strong)); }
+.wtp-brow-top{ display:flex; align-items:center; gap:8px; }
+.wtp-brow-srv{ margin-top:9px; }
 .wtp-bname{ display:flex; align-items:center; gap:6px; min-width:0; font-family:var(--mono);
   font-size:11px; color:var(--ink-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.wtp-bname .k{ color:var(--ink-whisper); }
+.wtp-brow.has-wt .wtp-bname{ font-size:12px; color:var(--ink); font-weight:600; }
+.wtp-bname .k{ color:var(--ink-whisper); font-weight:400; }
 .wtp-def{ flex:none; font-family:var(--mono); font-size:8px; letter-spacing:0.06em;
   text-transform:uppercase; color:var(--ink-mute); border:1px solid var(--line-strong);
   border-radius:20px; padding:1px 5px; }
-.wtp-inwt{ flex:none; display:inline-flex; align-items:center; gap:5px; font-family:var(--mono);
-  font-size:9.5px; color:var(--t-built); }
-.wtp-inwt-dot{ width:5px; height:5px; border-radius:50%; background:var(--t-built); }
-.wtp-actions{ flex:none; display:flex; gap:5px; position:relative; }
-.wtp-mini{ font-family:var(--mono); font-size:9.5px; padding:3px 7px; border-radius:6px;
-  border:1px solid var(--line); background:var(--bg-1); color:var(--ink-mute); cursor:pointer;
-  white-space:nowrap; transition:background .16s, color .16s; }
-.wtp-mini:hover{ background:var(--bg-2); color:var(--ink-dim); }
-.wtp-mini.on{ color:var(--ink); border-color:var(--line-strong); }
 
-.wtp-menu{ position:absolute; right:0; top:calc(100% + 5px); z-index:20; min-width:186px;
+/* the worktree pill — the single set-or-change control on every branch row */
+.wtp-pill{ flex:none; display:inline-flex; align-items:center; gap:5px; cursor:pointer;
+  font-family:var(--mono); font-size:9.5px; padding:3px 8px; border-radius:20px;
+  border:1px solid color-mix(in srgb, var(--t-built) 30%, transparent); color:var(--t-built);
+  background:color-mix(in srgb, var(--t-built) 9%, transparent); max-width:150px;
+  white-space:nowrap; overflow:hidden; transition:background .16s, border-color .16s, color .16s; }
+.wtp-pill:hover, .wtp-pill.on{ background:color-mix(in srgb, var(--t-built) 16%, transparent);
+  border-color:color-mix(in srgb, var(--t-built) 45%, transparent); }
+.wtp-pill-dot{ flex:none; width:5px; height:5px; border-radius:50%; background:currentColor; }
+.wtp-pill-cv{ flex:none; color:var(--ink-mute); font-size:9px; margin-left:1px; }
+.wtp-pill.mainwt{ color:var(--ink-dim); border-color:var(--line-strong);
+  background:var(--bg-2); }
+.wtp-pill.mainwt:hover, .wtp-pill.mainwt.on{ background:var(--bg-hi); border-color:var(--ink-whisper); }
+.wtp-pill.ghost{ color:var(--ink-mute); border:1px dashed var(--line-strong); background:none; }
+.wtp-pill.ghost:hover, .wtp-pill.ghost.on{ color:var(--ink-dim); border-color:var(--ink-whisper);
+  background:var(--bg-1); }
+
+.wtp-menu{ position:fixed; top:0; left:0; z-index:60; min-width:200px; max-width:280px;
   padding:5px; border-radius:10px; background:var(--bg-2); border:1px solid var(--line-strong);
   box-shadow:0 10px 28px rgba(0,0,0,0.45); animation:menu-in .12s ease-out; }
 .wtp-menu-head{ font-family:var(--mono); font-size:9px; color:var(--ink-whisper); padding:3px 7px 6px; }
@@ -682,8 +688,13 @@ a.ref:hover .k{ color:var(--ink-mute); }
   width:100%; text-align:left; padding:6px 7px; border-radius:7px; border:none; background:none;
   cursor:pointer; }
 .wtp-menu-opt:hover{ background:var(--bg-hi); }
-.wtp-menu-name{ font-family:var(--mono); font-size:11px; color:var(--ink); }
-.wtp-menu-cur{ font-family:var(--mono); font-size:9.5px; color:var(--ink-mute); }
+.wtp-menu-opt.cur{ background:color-mix(in srgb, var(--t-built) 10%, transparent); }
+.wtp-menu-opt.add{ margin-top:3px; border-top:1px solid var(--line); border-radius:0 0 7px 7px; }
+.wtp-menu-opt.add .wtp-menu-name{ color:var(--t-built); }
+.wtp-menu-name{ display:inline-flex; align-items:baseline; gap:6px; min-width:0;
+  font-family:var(--mono); font-size:11px; color:var(--ink); }
+.wtp-menu-check{ flex:none; font-size:8.5px; letter-spacing:0.04em; color:var(--t-built); }
+.wtp-menu-cur{ flex:none; font-family:var(--mono); font-size:9.5px; color:var(--ink-mute); }
 .wtp-menu-empty{ font-family:var(--mono); font-size:10px; color:var(--ink-whisper); padding:4px 7px; }
 
 .wtp-merged-toggle{ display:flex; align-items:center; gap:7px; width:100%; margin-top:8px;
