@@ -10,6 +10,13 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import * as S from "../../packages/db/store.js";
 import { threadWorkStatus } from "../../packages/db/work.js";
+import {
+  worktreeReport,
+  effectiveDevCommand,
+  createWorktree,
+  checkoutBranch,
+} from "../../packages/db/worktrees.js";
+import { startDevServer, stopDevServer, serverStatus } from "../../packages/db/devservers.js";
 
 const WEB_DIR = fileURLToPath(new URL("../web/", import.meta.url));
 
@@ -82,14 +89,15 @@ function scopeRepo(db, cwdRepo, url) {
   return cwdRepo;
 }
 
-function api(db, repo, url, cwdRepo) {
+function api(db, repo, url, cwdRepo, serverPort) {
   const q = url.searchParams;
   const p = url.pathname;
 
-  // The project switcher: every repo in the ledger, plus which one is "here" (the cwd repo).
+  // The project switcher: every repo in the ledger, as peers. There is no "home" project —
+  // the observer is a system-level service, so the repos it serves are just the set that have
+  // been enabled/initialized, ordered by recent activity (listRepos sorts by last event).
   if (p === "/api/projects") {
     return {
-      current: cwdRepo.slug,
       selected: repo.slug,
       projects: S.listRepos(db).map((r) => ({
         slug: r.slug,
@@ -143,6 +151,24 @@ function api(db, repo, url, cwdRepo) {
       window: days,
     };
   }
+  // Live git state (not from the ledger): worktrees + their dev servers, every local branch
+  // with its checkout/merge status. Computed on demand by shelling to git/lsof, then annotated
+  // with which servers *this* process is supervising (so the panel can show "starting…").
+  if (p === "/api/worktrees") {
+    const override = S.effectiveConfig(db, repo.slug, "devCommand", null);
+    const report = worktreeReport(repo, {
+      skipPid: process.pid,
+      skipPort: serverPort,
+      devCommand: override,
+    });
+    for (const wt of report.worktrees) {
+      const tracked = serverStatus(wt.path);
+      wt.serverState = wt.servers.length ? "live" : tracked && !tracked.exited ? "starting" : "stopped";
+      wt.tracked = tracked;
+    }
+    report.devCommandOverride = override || null;
+    return report;
+  }
   if (p === "/api/loose") return S.listLooseEnds(db, repo.id).map(decodeRefs);
   if (p === "/api/threads") return S.listThreads(db, repo.id).map((t) => withWork(db, t));
   const m = p.match(/^\/api\/thread\/(\d+)$/);
@@ -157,6 +183,88 @@ function api(db, repo, url, cwdRepo) {
     };
   }
   return { __status: 404, error: "unknown endpoint" };
+}
+
+// The write API: git worktree/branch mutations and dev-server lifecycle. Kept separate from
+// the read `api()` because these have side effects, take a parsed JSON body, and are gated by
+// the same-origin guard below. Every branch returns a plain object ({ ok, ... } / { error }).
+function writeApi(db, repo, url, body, serverPort) {
+  const p = url.pathname;
+  const b = body || {};
+
+  if (p === "/api/worktree/create") {
+    return createWorktree(repo, b.branch);
+  }
+  if (p === "/api/worktree/checkout") {
+    return checkoutBranch(repo, b.worktree, b.branch);
+  }
+  if (p === "/api/devcommand") {
+    // Persist a per-repo override so the panel's edited command survives restarts, and so the
+    // server (not the browser) is the source of truth for what `start` actually runs.
+    const cmd = typeof b.command === "string" ? b.command.trim() : "";
+    S.setConfig(db, repo.slug, "devCommand", cmd);
+    return { ok: true, command: cmd || null };
+  }
+  if (p === "/api/server/start") {
+    if (!b.worktree) return { __status: 400, error: "worktree required" };
+    const override = S.effectiveConfig(db, repo.slug, "devCommand", null);
+    const command = effectiveDevCommand(b.worktree, override);
+    if (!command) return { __status: 400, error: "no dev command — set one first" };
+    return startDevServer(b.worktree, command);
+  }
+  if (p === "/api/server/stop") {
+    if (!b.worktree) return { __status: 400, error: "worktree required" };
+    // Also SIGTERM any listener we can see in that worktree, so servers started outside the
+    // dashboard can be stopped too.
+    const report = worktreeReport(repo, { skipPid: process.pid, skipPort: serverPort });
+    const wt = report.worktrees.find((w) => w.path === b.worktree);
+    const pids = wt ? wt.servers.map((s) => s.pid).filter(Boolean) : [];
+    return stopDevServer(b.worktree, pids);
+  }
+  return { __status: 404, error: "unknown endpoint" };
+}
+
+// CSRF / DNS-rebinding guard for the write endpoints. The observer binds loopback and is
+// single-user, but it can now spawn processes and mutate git — so reject any request whose
+// Origin is cross-site or whose Host header isn't a loopback name we expect. A same-origin
+// dashboard fetch has no Origin (or a matching one) and a localhost Host, so it passes.
+function sameOrigin(req, port) {
+  const host = String(req.headers.host || "");
+  const hostOk = /^(localhost|127\.0\.0\.1|\[?::1\]?|observer)(:\d+)?$/.test(host);
+  const origin = req.headers.origin;
+  if (origin) {
+    try {
+      const o = new URL(origin);
+      if (!/^(localhost|127\.0\.0\.1|::1|observer)$/.test(o.hostname)) return false;
+    } catch {
+      return false;
+    }
+  }
+  return hostOk;
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve) => {
+    let data = "";
+    let tooBig = false;
+    req.on("data", (chunk) => {
+      data += chunk;
+      if (data.length > 1e6) {
+        tooBig = true;
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      if (tooBig) return resolve(null);
+      if (!data) return resolve({});
+      try {
+        resolve(JSON.parse(data));
+      } catch {
+        resolve(null);
+      }
+    });
+    req.on("error", () => resolve(null));
+  });
 }
 
 // Attach the issue-lifecycle rollup (done/in-progress/todo counts + unfinished list) so the
@@ -197,7 +305,16 @@ export function serve({ port = 4477, cwd = process.cwd() } = {}) {
     try {
       if (url.pathname.startsWith("/api/")) {
         const scoped = scopeRepo(db, repo, url);
-        const result = api(db, scoped, url, repo);
+        if (req.method === "POST") {
+          if (!sameOrigin(req, port)) return sendJson(res, 403, { error: "cross-origin request blocked" });
+          const body = await readJsonBody(req);
+          if (body === null) return sendJson(res, 400, { error: "invalid JSON body" });
+          const result = writeApi(db, scoped, url, body, port);
+          const status = result && result.__status ? result.__status : 200;
+          if (result) delete result.__status;
+          return sendJson(res, status, result);
+        }
+        const result = api(db, scoped, url, repo, port);
         const status = result && result.__status ? result.__status : 200;
         if (result) delete result.__status;
         return sendJson(res, status, result);
