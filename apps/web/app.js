@@ -1441,12 +1441,16 @@ async function pvSwitchBranch(name){
   const pvMenu = $("#pvBranchMenu"); if(pvMenu) pvMenu.hidden = true;
   showPreviewSwitching(name);
   try{ await apiPost("/api/preview/switch", { branch:name }); }catch(e){}
-  for(let i=0;i<50;i++){
+  // The preview server restarts on the same port: it goes DOWN, then comes back UP on the new
+  // branch. Reload the moment it's back — works whether or not the target branch knows about the
+  // preview API (older branches can't report preview.branch, so don't gate on it).
+  let sawDown = false;
+  for(let i=0;i<60;i++){
     await new Promise((r)=>setTimeout(r,300));
-    try{
-      const m = await fetch("/api/meta",{cache:"no-store"}).then((r)=>r.json());
-      if(m && m.preview && m.preview.self && m.preview.branch === name){ location.reload(); return; }
-    }catch(e){ /* server mid-restart */ }
+    let up = false;
+    try{ up = (await fetch("/api/meta",{cache:"no-store"})).ok; }catch(e){ up = false; }
+    if(!up){ sawDown = true; continue; }
+    if(sawDown){ location.reload(); return; }
   }
   location.reload();
 }
