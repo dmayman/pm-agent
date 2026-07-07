@@ -985,6 +985,13 @@ function panelHtml(worktrees, branches, data){
   let h = `<div class="wtp">`;
   h += `<div class="wtp-head"><span class="wtp-title">Branches</span>`
     + `<span class="wtp-sub">${liveCount ? `${liveCount} server${liveCount === 1 ? "" : "s"} live` : `${active.length}`}</span></div>`;
+  // A live preview of some branch, running elsewhere — link straight to it.
+  const pv = state.meta && state.meta.preview;
+  if(pv && !pv.self && pv.link){
+    h += `<a class="wtp-preview" href="${esc(pv.link.url)}" target="_blank" rel="noopener" title="open the preview dashboard">`
+      + `<span class="pv-dot"></span><span class="wtp-preview-txt">Preview live · <b>${esc(pv.link.branch || "")}</b></span>`
+      + `<span class="wtp-preview-go">↗</span></a>`;
+  }
   if(w.error) h += `<div class="wtp-err"><span class="wtp-err-msg">${esc(w.error)}</span><button class="wtp-x" data-act="dismiss" aria-label="dismiss">${icon("x")}</button></div>`;
   if(data && !data.serverScanned) h += `<div class="wtp-note">dev-server scan unavailable (lsof)</div>`;
 
@@ -1292,6 +1299,10 @@ async function loadMeta(){
   try{
     const m = await api("/api/meta");
     state.meta = m;
+    // Do this first: the chrome updates below touch view-rendered elements that may not exist yet
+    // at first boot, and loadMeta swallows throws — so keep the preview banner out of that blast
+    // radius, or a first-load race leaves it missing.
+    applyPreviewChrome(m.preview);
     const repo = m.repo || "";
     const slash = repo.indexOf("/");
     $("#repoOwner").textContent = slash >= 0 ? repo.slice(0, slash + 1) : repo;
@@ -1306,6 +1317,28 @@ async function loadMeta(){
       ? `<span class="n">${m.loose}</span> loose end${m.loose===1?"":"s"} open`
       : `no loose ends`;
   }catch(e){ /* meta is best-effort chrome; views still render */ }
+}
+
+// Preview mode has two faces. When THIS dashboard is the preview, pin a loud banner so it's never
+// mistaken for the real ledger. When it's the real dashboard and a preview is running, the link is
+// surfaced inside the Branches panel (see panelHtml) — nothing to do here but clear any banner.
+function applyPreviewChrome(preview){
+  let banner = $("#previewBanner");
+  if(preview && preview.self){
+    document.body.classList.add("preview-mode");
+    if(!banner){
+      banner = document.createElement("div");
+      banner.id = "previewBanner";
+      document.body.insertBefore(banner, document.body.firstChild);
+    }
+    banner.innerHTML = `<span class="pv-dot"></span>`
+      + `<span class="pv-label">PREVIEW</span>`
+      + `<span class="pv-branch">${esc(preview.branch || "branch")}</span>`
+      + `<span class="pv-note">scratch copy of your ledger — not the real one</span>`;
+  }else{
+    document.body.classList.remove("preview-mode");
+    if(banner) banner.remove();
+  }
 }
 
 // ---- project switcher -------------------------------------------------------

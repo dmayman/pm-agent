@@ -52,6 +52,34 @@ function observerAlias(port) {
   }
 }
 
+// Preview awareness for the UI. Two sides of the same coin:
+//   · THIS server is the preview (launched with PM_AGENT_PREVIEW=1) → tell the UI to show the
+//     "not your real ledger" banner, and which branch it's serving.
+//   · THIS server is the real one → look for a live preview via the rendezvous file the
+//     `preview` command drops in the real home, so the dashboard can link to it.
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+function previewInfo() {
+  if (process.env.PM_AGENT_PREVIEW === "1") {
+    return { self: true, branch: process.env.PM_AGENT_PREVIEW_BRANCH || null };
+  }
+  try {
+    const j = JSON.parse(readFileSync(path.join(S.pmHome(), "preview.json"), "utf8"));
+    if (j && j.pid && pidAlive(j.pid)) {
+      return { self: false, link: { url: j.url, branch: j.branch, port: j.port } };
+    }
+  } catch {
+    /* no preview running — the common case */
+  }
+  return null;
+}
+
 function sendJson(res, status, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(status, {
@@ -128,6 +156,7 @@ function api(db, repo, url, cwdRepo, serverPort) {
       loose: S.listLooseEnds(db, repo.id).length,
       cost: u.cost || 0,
       tokens: (u.input || 0) + (u.output || 0) + (u.cache_read || 0) + (u.cache_creation || 0),
+      preview: previewInfo(),
     };
   }
   if (p === "/api/timeline") {

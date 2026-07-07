@@ -83,30 +83,23 @@ body::after{
   background:linear-gradient(180deg, rgba(255,255,255,0.012), transparent 40%);
 }
 
-.brand{ display:flex; gap:13px; align-items:flex-start; margin-bottom:34px; }
-.mark{ position:relative; width:15px; height:40px; flex:none; margin-top:2px; }
-.mark-line{ position:absolute; left:7px; top:0; bottom:0; width:1px; background:var(--spine); }
-.mark-bead{ position:absolute; left:3px; width:9px; height:9px; border-radius:50%;
-  box-shadow:0 0 0 3px var(--bg); }
-.mark-bead.b1{ top:1px;  background:var(--t-decided); }
-.mark-bead.b2{ top:16px; background:var(--t-built); }
-.mark-bead.b3{ top:31px; background:transparent; border:1.5px solid var(--t-deferred); }
+.brand{ display:block; margin-bottom:34px; }
 
-.brand-id{ position:relative; min-width:0; }
+.brand-id{ position:relative; width:100%; }
 .repo{ font-family:var(--mono); font-size:13px; letter-spacing:-0.1px; line-height:1.25;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .repo .owner{ color:var(--ink-mute); }
 .repo .name{ color:var(--ink); font-weight:600; }
 
 /* project switcher — the rail repo label becomes a menu button when >1 project exists */
-.repo-btn{ display:flex; align-items:center; gap:7px; max-width:100%;
-  margin:-3px -6px 0; padding:3px 6px; border:none; border-radius:7px;
+.repo-btn{ display:flex; align-items:center; justify-content:space-between; gap:7px; width:100%;
+  position:relative; margin:-8px -6px 0; padding:8px 11px; border:1px solid var(--line-strong); border-radius:9px;
   background:none; color:inherit; text-align:left; cursor:default; font:inherit;
-  transition:background .16s ease; }
+  transition:background .16s ease, border-color .16s ease; }
 .repo-btn:not(:disabled){ cursor:pointer; }
-.repo-btn:not(:disabled):hover{ background:var(--bg-1); }
-.repo-btn[aria-expanded="true"]{ background:var(--bg-2); }
-.repo-chev{ display:inline-flex; flex-direction:column; gap:2px; flex:none; }
+.repo-btn:not(:disabled):hover{ background:var(--bg-1); border-color:var(--ink-dim); }
+.repo-btn[aria-expanded="true"]{ background:var(--bg-2); border-color:var(--ink-dim); }
+.repo-chev{ display:inline-flex; flex-direction:column; gap:2px; flex:none; margin-right:-3px; }
 .repo-chev i{ display:block; width:0; height:0;
   border-left:3.5px solid transparent; border-right:3.5px solid transparent; }
 .repo-chev .up{ border-bottom:4px solid var(--ink-mute); }
@@ -782,3 +775,45 @@ a.ref:hover .k{ color:var(--ink-mute); }
 @media (prefers-reduced-motion:reduce){
   *{ animation-duration:0.001ms !important; animation-iteration-count:1 !important; }
 }
+
+/* ---------- preview environment ---------- */
+/* When this dashboard is a per-branch preview, a loud amber banner pins the top so it's never
+   confused with the real ledger; the app shifts down to make room. */
+#previewBanner{
+  position:fixed; top:0; left:0; right:0; height:34px; z-index:1000;
+  display:flex; align-items:center; gap:11px; padding:0 16px;
+  font-family:var(--mono); font-size:11.5px; font-weight:600; letter-spacing:0.04em;
+  color:#1a1200; overflow:hidden; white-space:nowrap;
+  background:
+    repeating-linear-gradient(135deg, rgba(0,0,0,0.06) 0 10px, transparent 10px 20px),
+    linear-gradient(180deg,#ffd24a,#f5b301);
+  box-shadow:0 1px 0 rgba(0,0,0,0.28), 0 6px 18px rgba(0,0,0,0.32);
+}
+#previewBanner .pv-label{ font-weight:800; letter-spacing:0.14em; }
+#previewBanner .pv-branch{
+  padding:2px 8px; border-radius:5px; background:rgba(0,0,0,0.22); color:#fff5d6;
+  font-weight:700; letter-spacing:0.02em;
+}
+#previewBanner .pv-note{ color:#3a2c00; font-weight:600; opacity:0.9; overflow:hidden; text-overflow:ellipsis; }
+body.preview-mode .app{ height:calc(100vh - 34px); margin-top:34px; }
+body.preview-mode .main{ height:calc(100vh - 34px); }
+
+/* the shared status dot — dark on the amber banner, amber on the dark panel link */
+.pv-dot{
+  width:8px; height:8px; border-radius:50%; flex:none;
+  background:#1a1200; box-shadow:0 0 0 0 rgba(26,18,0,0.5); animation:pvpulse 2s ease-out infinite;
+}
+.wtp-preview .pv-dot{ background:#f5b301; box-shadow:0 0 0 0 rgba(245,179,1,0.5); }
+@keyframes pvpulse{ 70%{ box-shadow:0 0 0 6px rgba(245,179,1,0); } 100%{ box-shadow:0 0 0 0 rgba(245,179,1,0); } }
+
+/* the real dashboard's link to a running preview, at the top of the Branches panel */
+.wtp-preview{
+  display:flex; align-items:center; gap:8px; margin:2px 0 10px;
+  padding:7px 10px; border-radius:8px; text-decoration:none;
+  border:1px solid rgba(245,179,1,0.35); background:rgba(245,179,1,0.08);
+  color:var(--ink); font-size:12px;
+}
+.wtp-preview:hover{ background:rgba(245,179,1,0.14); border-color:rgba(245,179,1,0.55); }
+.wtp-preview-txt{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink-soft); }
+.wtp-preview-txt b{ color:var(--ink); }
+.wtp-preview-go{ color:#f5b301; font-size:13px; }

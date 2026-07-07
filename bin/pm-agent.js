@@ -9,8 +9,17 @@
 // grows this also becomes the launcher for the local server + web UI. Dependency-free so
 // `npx pm-agent` works with zero install.
 
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
@@ -39,6 +48,10 @@ LOCAL-DEV COMMANDS
                        so Claude reads your live edits instead of the release
   reload [path]      Re-sync the working tree after edits (validate + clean
                        reinstall). Use this on every change while developing.
+  preview            Launch a throwaway PREVIEW dashboard for THIS checkout's
+                       branch, on its own port, against a scratch copy of your
+                       real ledger — verify a change before merging without
+                       touching your live observer. --stop | --fresh | --port N
   validate [path]    Validate the marketplace + plugin manifests (--strict)
   release <level>    Cut a release: bump (patch|minor|major), tag, push, publish
                        to npm. Run from the repo (or pass its path).
@@ -593,6 +606,114 @@ function cmdObserverAutostart(rest) {
   );
 }
 
+// The real ledger home (where the always-on observer reads/writes). The preview runs against a
+// throwaway COPY of this, so its data never touches yours.
+function realHome() {
+  return process.env.PM_AGENT_HOME || path.join(os.homedir(), ".pm-agent");
+}
+
+// Is a pid still alive? (signal 0 = existence check; EPERM means alive but not ours.)
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+
+// Stop a running preview named by the rendezvous file, and remove the file. Quiet mode is for the
+// idempotent restart path (relaunching `preview` tears down the old one first).
+function stopPreview({ quiet = false } = {}) {
+  const rendezvous = path.join(realHome(), "preview.json");
+  let info = null;
+  try {
+    info = JSON.parse(readFileSync(rendezvous, "utf8"));
+  } catch {
+    if (!quiet) process.stdout.write("No preview is running.\n");
+    return;
+  }
+  if (info?.pid && pidAlive(info.pid)) {
+    try {
+      process.kill(info.pid);
+    } catch {}
+  }
+  try {
+    unlinkSync(rendezvous);
+  } catch {}
+  if (!quiet) process.stdout.write(`✓ Stopped the preview (was ${info?.url || "?"}).\n`);
+}
+
+// Spin up a PREVIEW dashboard: a second observer serving THIS checkout's code (the branch under
+// test) on its own port, against a scratch DB copied fresh from your real ledger — so you can
+// click a link and verify a change before merging, without touching your always-on observer or
+// its data. Idempotent: relaunching restarts + re-seeds. `--stop` tears it down; `--fresh` starts
+// from an empty DB instead of copying prod; `--port N` overrides the port (default 4478).
+function cmdPreview(rest) {
+  if (rest.includes("--stop") || rest.includes("--remove")) {
+    stopPreview();
+    return;
+  }
+  const home = realHome();
+  mkdirSync(home, { recursive: true });
+
+  const tree = process.cwd();
+  if (!existsSync(path.join(tree, "bin", "pm-agent.js"))) {
+    fail("Run `pm-agent preview` from the pm-agent repo checkout you want to preview.");
+  }
+  const branch =
+    runLocal("git", ["-C", tree, "rev-parse", "--abbrev-ref", "HEAD"], {
+      capture: true,
+      tolerate: true,
+    }).stdout || "(detached)";
+
+  const portArg = rest.find((a) => a.startsWith("--port"));
+  const port =
+    Number((portArg && (portArg.split("=")[1] || rest[rest.indexOf(portArg) + 1])) || 0) || 4478;
+
+  // Fresh start: kill any prior preview, then reset the scratch home and re-seed from prod.
+  stopPreview({ quiet: true });
+  const scratchHome = path.join(home, "preview-home");
+  rmSync(scratchHome, { recursive: true, force: true });
+  mkdirSync(scratchHome, { recursive: true });
+  const fresh = rest.includes("--fresh");
+  if (!fresh) {
+    for (const suffix of ["", "-wal", "-shm"]) {
+      const src = path.join(home, `pm.db${suffix}`);
+      if (existsSync(src)) copyFileSync(src, path.join(scratchHome, `pm.db${suffix}`));
+    }
+  }
+
+  // Detached `serve` from this checkout, pointed at the scratch home and flagged as a preview.
+  const log = path.join(home, "preview.log");
+  const out = openSync(log, "a");
+  const child = spawn(process.execPath, [path.join(HERE, "pm-agent.js"), "serve", "--port", String(port)], {
+    cwd: tree,
+    detached: true,
+    stdio: ["ignore", out, out],
+    env: {
+      ...process.env,
+      PM_AGENT_HOME: scratchHome,
+      PM_AGENT_PREVIEW: "1",
+      PM_AGENT_PREVIEW_BRANCH: branch,
+    },
+  });
+  child.unref();
+
+  const url = `http://localhost:${port}`;
+  writeFileSync(
+    path.join(home, "preview.json"),
+    JSON.stringify({ url, branch, port, pid: child.pid, startedAt: new Date().toISOString() })
+  );
+  process.stdout.write(
+    `\n🔬 Preview live  ·  branch ${branch}\n` +
+      `  → ${url}\n\n` +
+      `  ${fresh ? "Empty scratch DB" : "Scratch DB copied from your real ledger"} — changes here never touch prod.\n` +
+      `  Your real observer is untouched, and now links to this preview.\n` +
+      `  Stop it with:  pm-agent preview --stop\n  Logs: ${log}\n`
+  );
+}
+
 const argv = process.argv.slice(2);
 const [cmd, arg] = argv;
 
@@ -632,6 +753,9 @@ switch (cmd) {
     break;
   case "observer-autostart":
     cmdObserverAutostart(argv.slice(1));
+    break;
+  case "preview":
+    cmdPreview(argv.slice(1));
     break;
   case "enable":
   case "disable":
