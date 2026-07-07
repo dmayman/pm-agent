@@ -6,10 +6,14 @@
 // so a server started in a terminal still shows as live, it just can't be stopped from here
 // unless we also find its listening pid.
 
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 
 const registry = new Map(); // worktreePath -> entry
 const LOG_LINES = 60;
+// How long start waits to catch a fast-failing command (missing script, wrong dir, port in use,
+// non-zero exit) before reporting success. Long enough to catch spawn errors and immediate exits;
+// short enough that a healthy `npm run dev` (which stays up) returns promptly.
+const START_GRACE_MS = 1500;
 
 function pushLog(entry, buf) {
   const text = buf.toString();
@@ -40,7 +44,7 @@ export function serverStatus(worktreePath) {
   };
 }
 
-export function startDevServer(worktreePath, command) {
+export async function startDevServer(worktreePath, command) {
   if (!command || !command.trim()) return { ok: false, error: "no dev command configured" };
   const existing = registry.get(worktreePath);
   if (existing && !existing.exited) return { ok: true, already: true, pid: existing.pid };
@@ -67,19 +71,67 @@ export function startDevServer(worktreePath, command) {
     log: [],
     exited: false,
     exitCode: null,
+    spawnError: null,
   };
   proc.stdout.on("data", (d) => pushLog(entry, d));
   proc.stderr.on("data", (d) => pushLog(entry, d));
+  // Resolve `settled` the moment the child exits or fails to spawn, so start can distinguish a
+  // command that came up from one that died on the launch pad instead of optimistically claiming
+  // success (the "Run does nothing" bug — the failure only ever landed in this ring buffer).
+  let settle;
+  const settled = new Promise((res) => { settle = res; });
   proc.on("exit", (code, signal) => {
     entry.exited = true;
     entry.exitCode = code != null ? code : signal;
+    settle();
   });
   proc.on("error", (err) => {
     entry.exited = true;
-    pushLog(entry, "spawn error: " + (err && err.message));
+    entry.spawnError = (err && err.message) || "spawn failed";
+    pushLog(entry, "spawn error: " + entry.spawnError);
+    settle();
   });
   registry.set(worktreePath, entry);
-  return { ok: true, pid: proc.pid };
+
+  // Wait out the grace window: if the command fails fast we surface the real reason + log tail;
+  // if it's still alive it's presumed to be booting (lsof-based liveness in worktrees.js takes
+  // over from here and flips the panel starting → live once it binds a port).
+  await Promise.race([settled, new Promise((r) => setTimeout(r, START_GRACE_MS))]);
+
+  if (entry.exited) {
+    const why = entry.spawnError
+      ? entry.spawnError
+      : `dev command exited (code ${entry.exitCode}) before it came up`;
+    return { ok: false, error: why, log: entry.log.slice(-8), exitCode: entry.exitCode };
+  }
+  return { ok: true, pid: proc.pid, log: entry.log.slice(-8) };
+}
+
+// Best-effort kill of the whole process group a listener belongs to (npm -> node -> …), given any
+// pid in it. We spawn our own servers detached (pid == group leader), but a listener detected via
+// lsof — e.g. one a previous, since-restarted serve process launched — may be a child, so resolve
+// its pgid via `ps` and signal the group. Falls back to signalling the bare pid.
+function killGroup(pid) {
+  let pgid = null;
+  try {
+    const out = execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 3000,
+    }).trim();
+    const n = Number(out);
+    if (Number.isFinite(n) && n > 0) pgid = n;
+  } catch {}
+  let ok = false;
+  if (pgid) {
+    try { process.kill(-pgid, "SIGTERM"); ok = true; } catch {}
+  }
+  if (!ok) {
+    // No pgid (or the group kill was rejected): try the pid as a group leader, then as a lone pid.
+    try { process.kill(-pid, "SIGTERM"); ok = true; } catch {}
+    if (!ok) { try { process.kill(pid, "SIGTERM"); ok = true; } catch {} }
+  }
+  return ok;
 }
 
 // Stop a worktree's dev server. Kills the process group we launched, and also SIGTERMs any
@@ -88,24 +140,13 @@ export function startDevServer(worktreePath, command) {
 export function stopDevServer(worktreePath, detectedPids = []) {
   let killed = false;
   const entry = registry.get(worktreePath);
-  if (entry && !entry.exited) {
-    try {
-      process.kill(-entry.pid, "SIGTERM");
-      killed = true;
-    } catch {
-      try {
-        process.kill(entry.pid, "SIGTERM");
-        killed = true;
-      } catch {}
-    }
-  }
+  if (entry && !entry.exited && killGroup(entry.pid)) killed = true;
   registry.delete(worktreePath);
+  // Group-kill any listener we detected in that worktree too — covers servers started outside the
+  // dashboard, and ones a previous serve process launched (its in-memory registry didn't survive
+  // the restart). A single-pid SIGTERM used to leave the npm parent alive holding the port.
   for (const pid of detectedPids) {
-    if (!pid) continue;
-    try {
-      process.kill(pid, "SIGTERM");
-      killed = true;
-    } catch {}
+    if (pid && killGroup(pid)) killed = true;
   }
   return { ok: killed };
 }
