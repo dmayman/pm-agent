@@ -42,14 +42,23 @@ Fields:
 - `url` (optional) — overrides the open-link entirely (default `http://localhost:{port}`).
 
 Guidance:
+- **Assume a cold machine — nothing is already running.** The whole point is that the user
+  needs to know *nothing* about how to boot this repo: they open the dashboard, hit Start all,
+  and everything comes up. So write each command to be self-sufficient from a fresh slate —
+  never assume a daemon, VM, database, or tunnel is already up because it happens to be up on
+  your machine right now. If a service needs a container runtime, VM, or background daemon,
+  the command must **start that first**: `colima start && docker compose up`, not bare
+  `docker compose up`. Read the repo's docs for the *documented* startup, then fold every
+  prerequisite step into the command so a single click reproduces it end to end.
 - Declare services meant to run and stay up — app servers (API, UI, worker) AND the
   infrastructure they depend on (DB, cache, queue). Skip one-off build/test/lint/migrate/seed
-  commands (they run once and exit).
+  commands (they run once and exit). If the DB genuinely needs a one-time migrate/seed on a
+  truly empty volume, chain it before the long-lived process (`… && pnpm db:migrate && docker
+  compose up`) only when it's idempotent — otherwise leave setup to the repo's own tooling.
 - **Run in the foreground so the dashboard can supervise and Stop it.** Strip any
   detach/background flag: use `docker compose up`, not `docker compose up -d`; drop a trailing
   `&`. A detached command returns immediately, so the dashboard can't stop it (though a declared
-  `port` still lights the dot green while the port is up). If the daemon it needs isn't always
-  running (e.g. Colima / Docker Desktop), prefix a start: `colima start && docker compose up`.
+  `port` still lights the dot green while the port is up).
 - Use the real invocation, including any workspace filter (`pnpm --filter @acme/app dev`).
 - **Non-HTTP services** (Postgres, Redis…) have no meaningful `health`/`url` — omit both and
   rely on `port` alone for the green-dot liveness check. `health`/`url` are only for HTTP
