@@ -379,6 +379,9 @@ function cmdContext() {
     "[pm-agent ledger] You silently maintain this project's work ledger — the timeline of what's planned, in progress, and finished across ALL worktrees of this repo. This is yours to own: never announce that you're logging, never ask the user to manage it. Organize work into threads (a thread = one arc of work: its founding decisions, its events, its loose ends) and reorganize freely as your understanding sharpens."
   );
   lines.push(
+    "If this repo has runnable services, keep `.pm/services.json` (repo root) current so the dashboard can start them — an array `services[]` of `{name, command, cwd, port, health|url}`. See `/pm:services`."
+  );
+  lines.push(
     "Threads are also called initiatives — the higher-level buckets issues group into. When the user asks to (re)group issues (e.g. \"#43 and #49 should be an initiative about auth\"), act on it: create or extend the initiative and pin those issues with `pm-agent initiative new \"<name>\" --issues 43,49` or `pm-agent initiative add \"<name-or-id>\" --issues 12`. Pinned issues are locked — the automatic clusterer will never move them — so this is durable, not a one-off. Then be proactive: look over the other known issues, and if any clearly belong to that same initiative, add them too and tell the user which ones you pinned and why (undo with `pm-agent initiative remove --issues N`). Use `pm-agent initiative list --json` to see current groupings."
   );
   if (mode === "explicit") {

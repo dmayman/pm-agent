@@ -13,10 +13,19 @@ import { threadWorkStatus } from "../../packages/db/work.js";
 import {
   worktreeReport,
   effectiveDevCommand,
+  readServices,
   createWorktree,
   checkoutBranch,
 } from "../../packages/db/worktrees.js";
-import { startDevServer, stopDevServer, serverStatus } from "../../packages/db/devservers.js";
+import {
+  startDevServer,
+  stopDevServer,
+  serverStatus,
+  startService,
+  stopService,
+  serviceStatus,
+  trackedServiceNames,
+} from "../../packages/db/devservers.js";
 
 const WEB_DIR = fileURLToPath(new URL("../web/", import.meta.url));
 
@@ -185,6 +194,17 @@ function api(db, repo, url, cwdRepo, serverPort) {
   return { __status: 404, error: "unknown endpoint" };
 }
 
+// The listener pids on a service's declared port, under a given worktree — so stop can SIGTERM a
+// server started outside the dashboard too (mirrors the single-server stop). A port-less service
+// has nothing to port-detect: only the process group we ourselves launched can be stopped.
+function listenerPidsFor(repo, worktree, port, serverPort) {
+  if (port == null) return [];
+  const report = worktreeReport(repo, { skipPid: process.pid, skipPort: serverPort });
+  const wt = report.worktrees.find((w) => w.path === worktree);
+  if (!wt) return [];
+  return wt.servers.filter((s) => s.port === port).map((s) => s.pid).filter(Boolean);
+}
+
 // The write API: git worktree/branch mutations and dev-server lifecycle. Kept separate from
 // the read `api()` because these have side effects, take a parsed JSON body, and are gated by
 // the same-origin guard below. Every branch returns a plain object ({ ok, ... } / { error }).
@@ -220,6 +240,74 @@ async function writeApi(db, repo, url, body, serverPort) {
     const wt = report.worktrees.find((w) => w.path === b.worktree);
     const pids = wt ? wt.servers.map((s) => s.pid).filter(Boolean) : [];
     return stopDevServer(b.worktree, pids);
+  }
+
+  // Per-service lifecycle. The command is ALWAYS resolved by the server from the worktree's
+  // checked-in .pm/services.json (never taken from the request body) — a hostile POST can name a
+  // service but can't inject a command to run.
+  if (p === "/api/service/start") {
+    if (!b.worktree || !b.name) return { __status: 400, error: "worktree and name required" };
+    const { services, error } = readServices(b.worktree);
+    if (error) return { __status: 400, error };
+    let service = services && services.find((s) => s.name === b.name);
+    if (!service) {
+      // No manifest entry: allow the fallback "dev" service via auto-detect / stored override.
+      if (b.name === "dev") {
+        const override = S.effectiveConfig(db, repo.slug, "devCommand", null);
+        const command = effectiveDevCommand(b.worktree, override);
+        if (!command) return { __status: 400, error: "no dev command — set one first" };
+        service = { name: "dev", command, cwd: ".", port: null };
+      } else {
+        return { __status: 404, error: `no service "${b.name}" in .pm/services.json` };
+      }
+    }
+    return await startService(b.worktree, service);
+  }
+  if (p === "/api/service/stop") {
+    if (!b.worktree || !b.name) return { __status: 400, error: "worktree and name required" };
+    const { services } = readServices(b.worktree);
+    const svc = services && services.find((s) => s.name === b.name);
+    const pids = listenerPidsFor(repo, b.worktree, svc ? svc.port : null, serverPort);
+    return stopService(b.worktree, b.name, pids);
+  }
+  if (p === "/api/services/start-all") {
+    if (!b.worktree) return { __status: 400, error: "worktree required" };
+    const { services, error } = readServices(b.worktree);
+    if (error) return { __status: 400, error };
+    if (!services || !services.length) return { __status: 400, error: "no services declared" };
+    // One scan up front tells us which declared ports are already listening.
+    const report = worktreeReport(repo, { skipPid: process.pid, skipPort: serverPort });
+    const wt = report.worktrees.find((w) => w.path === b.worktree);
+    const livePorts = new Set((wt ? wt.servers : []).map((s) => s.port));
+    const results = [];
+    for (const s of services) {
+      const trackedLive = (() => { const t = serviceStatus(b.worktree, s.name); return t && !t.exited; })();
+      if ((s.port != null && livePorts.has(s.port)) || trackedLive) {
+        results.push({ name: s.name, ok: true, already: true });
+        continue;
+      }
+      const r = await startService(b.worktree, s);
+      results.push({ name: s.name, ...r });
+    }
+    return { ok: results.every((r) => r.ok !== false), results };
+  }
+  if (p === "/api/services/stop-all") {
+    if (!b.worktree) return { __status: 400, error: "worktree required" };
+    const { services } = readServices(b.worktree);
+    const report = worktreeReport(repo, { skipPid: process.pid, skipPort: serverPort });
+    const wt = report.worktrees.find((w) => w.path === b.worktree);
+    // Everything declared, plus anything we're still tracking that isn't declared anymore.
+    const names = new Set((services || []).map((s) => s.name));
+    for (const n of trackedServiceNames(b.worktree)) names.add(n);
+    const results = [];
+    for (const name of names) {
+      const svc = (services || []).find((s) => s.name === name);
+      const pids = svc && svc.port != null && wt
+        ? wt.servers.filter((s) => s.port === svc.port).map((s) => s.pid).filter(Boolean)
+        : [];
+      results.push({ name, ...stopService(b.worktree, name, pids) });
+    }
+    return { ok: true, results };
   }
   return { __status: 404, error: "unknown endpoint" };
 }
