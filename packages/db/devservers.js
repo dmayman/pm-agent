@@ -7,6 +7,20 @@
 // unless we also find its listening pid.
 
 import { spawn, execFileSync } from "node:child_process";
+import path from "node:path";
+
+// The observer often runs as a launchd agent, which spawns it with a stripped-down PATH that does
+// NOT include the node/npm bin dir (e.g. an nvm/volta install). A dev command spawned from here
+// then dies with `sh: npm: command not found` (exit 127) — the real reason "Run does nothing".
+// Guarantee the child can find at least the same node/npm that's running the observer by prepending
+// its bin dir; version-manager shims (npx, corepack→yarn/pnpm) live there too.
+const NODE_BIN_DIR = path.dirname(process.execPath);
+function childEnv() {
+  const basePath = process.env.PATH || "";
+  const parts = basePath.split(path.delimiter);
+  const PATH = parts.includes(NODE_BIN_DIR) ? basePath : NODE_BIN_DIR + path.delimiter + basePath;
+  return { ...process.env, PATH };
+}
 
 const registry = new Map(); // worktreePath -> entry
 const LOG_LINES = 60;
@@ -58,6 +72,7 @@ export async function startDevServer(worktreePath, command) {
       shell: true,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
+      env: childEnv(),
     });
   } catch (err) {
     return { ok: false, error: String(err && err.message) };
