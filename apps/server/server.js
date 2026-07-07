@@ -282,6 +282,49 @@ function decodeRefs(e) {
   return e;
 }
 
+// SQLite's data_version bumps whenever the database file is committed to by *another*
+// connection — exactly our situation: the ledger is written by a separate observer process, so
+// polling this on the server's own connection is a cheap, reliable "did the ledger change?"
+// signal to fan out to connected SSE clients. (It deliberately does not tick for writes made on
+// this same connection — our config writes — which don't need pushing anyway.)
+function dataVersion(db) {
+  try {
+    return db.prepare("PRAGMA data_version").get().data_version;
+  } catch {
+    return 0;
+  }
+}
+
+// Open a long-lived Server-Sent Events connection. Frames are pushed by the change-poll in
+// serve() whenever data_version moves, so the dashboard learns of new ledger data in ~1s
+// without polling. Named-event-less `data:` frames so the client's plain `onmessage` catches
+// them; a `retry:` hint drives EventSource's own reconnect after a server restart.
+function openStream(req, res, sseClients, version) {
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-store",
+    connection: "keep-alive",
+    // stop any intermediary from buffering the stream (frames must flush immediately)
+    "x-accel-buffering": "no",
+  });
+  res.write("retry: 3000\n\n");
+  res.write(`data: ${JSON.stringify({ type: "hello", v: version })}\n\n`);
+  sseClients.add(res);
+  // A periodic comment keeps the socket alive through idle-timeout proxies without waking the UI.
+  const ping = setInterval(() => {
+    try {
+      res.write(": keep-alive\n\n");
+    } catch {}
+  }, 25000);
+  if (ping.unref) ping.unref();
+  const cleanup = () => {
+    clearInterval(ping);
+    sseClients.delete(res);
+  };
+  req.on("close", cleanup);
+  res.on("close", cleanup);
+}
+
 export function serve({ port = 4477, cwd = process.cwd() } = {}) {
   const db = S.openDb();
   // Default project: the repo we're launched inside. When there isn't one — e.g. the server
@@ -300,10 +343,31 @@ export function serve({ port = 4477, cwd = process.cwd() } = {}) {
     repo = known[0];
   }
 
+  // Live push: hold every /api/stream connection open and nudge them all whenever the ledger's
+  // data_version changes. One shared 1s poll fans out to N clients, so the dashboard updates
+  // within ~1s of the observer writing, with no per-client polling.
+  const sseClients = new Set();
+  let lastVersion = dataVersion(db);
+  const watch = setInterval(() => {
+    const v = dataVersion(db);
+    if (v === lastVersion) return;
+    lastVersion = v;
+    const frame = `data: ${JSON.stringify({ type: "change", v })}\n\n`;
+    for (const client of sseClients) {
+      try {
+        client.write(frame);
+      } catch {}
+    }
+  }, 1000);
+  if (watch.unref) watch.unref();
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     try {
       if (url.pathname.startsWith("/api/")) {
+        if (url.pathname === "/api/stream" && req.method === "GET") {
+          return openStream(req, res, sseClients, lastVersion);
+        }
         const scoped = scopeRepo(db, repo, url);
         if (req.method === "POST") {
           if (!sameOrigin(req, port)) return sendJson(res, 403, { error: "cross-origin request blocked" });
