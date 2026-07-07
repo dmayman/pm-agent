@@ -1416,7 +1416,9 @@ function wirePreviewMenus(){
 async function fillPvBranchMenu(menu){
   menu.innerHTML = `<div class="pv-menu-msg">loading…</div>`;
   let data;
-  try{ data = await api("/api/worktrees"); }
+  // Query the preview server's OWN repo (the worktree it serves), not the project you're viewing
+  // in the rail — the previewed branch belongs to the served repo, so no ?repo override.
+  try{ data = await fetch("/api/worktrees", { cache:"no-store" }).then((r) => r.json()); }
   catch(e){ menu.innerHTML = `<div class="pv-menu-msg">unavailable</div>`; return; }
   const cur = state.preview && state.preview.branch;
   const branches = (data.branches || [])

@@ -783,7 +783,7 @@ a.ref:hover .k{ color:var(--ink-mute); }
   position:fixed; top:0; left:0; right:0; height:34px; z-index:1000;
   display:flex; align-items:center; gap:11px; padding:0 16px;
   font-family:var(--mono); font-size:11.5px; font-weight:600; letter-spacing:0.04em;
-  color:#1a1200; overflow:hidden; white-space:nowrap;
+  color:#1a1200; white-space:nowrap;
   background:
     repeating-linear-gradient(135deg, rgba(0,0,0,0.06) 0 10px, transparent 10px 20px),
     linear-gradient(180deg,#ffd24a,#f5b301);
