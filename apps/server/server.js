@@ -188,7 +188,7 @@ function api(db, repo, url, cwdRepo, serverPort) {
 // The write API: git worktree/branch mutations and dev-server lifecycle. Kept separate from
 // the read `api()` because these have side effects, take a parsed JSON body, and are gated by
 // the same-origin guard below. Every branch returns a plain object ({ ok, ... } / { error }).
-function writeApi(db, repo, url, body, serverPort) {
+async function writeApi(db, repo, url, body, serverPort) {
   const p = url.pathname;
   const b = body || {};
 
@@ -210,7 +210,7 @@ function writeApi(db, repo, url, body, serverPort) {
     const override = S.effectiveConfig(db, repo.slug, "devCommand", null);
     const command = effectiveDevCommand(b.worktree, override);
     if (!command) return { __status: 400, error: "no dev command — set one first" };
-    return startDevServer(b.worktree, command);
+    return await startDevServer(b.worktree, command);
   }
   if (p === "/api/server/stop") {
     if (!b.worktree) return { __status: 400, error: "worktree required" };
@@ -309,7 +309,7 @@ export function serve({ port = 4477, cwd = process.cwd() } = {}) {
           if (!sameOrigin(req, port)) return sendJson(res, 403, { error: "cross-origin request blocked" });
           const body = await readJsonBody(req);
           if (body === null) return sendJson(res, 400, { error: "invalid JSON body" });
-          const result = writeApi(db, scoped, url, body, port);
+          const result = await writeApi(db, scoped, url, body, port);
           const status = result && result.__status ? result.__status : 200;
           if (result) delete result.__status;
           return sendJson(res, status, result);

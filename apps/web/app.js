@@ -992,7 +992,14 @@ async function handleWtAction(el){
     w.busy.add("srv:" + wt); repaintPanel();
     const r = await apiPost("/api/server/start", { worktree: wt });
     w.busy.delete("srv:" + wt);
-    w.error = r && r.ok === false ? (r.error || "couldn't start server") : null;
+    if(r && r.ok === false){
+      // The server now waits out a grace window and reports fast failures with a log tail — show
+      // the real reason (bad command, missing script, port in use) instead of silently reverting.
+      const tail = Array.isArray(r.log) && r.log.length ? " — " + r.log[r.log.length - 1] : "";
+      w.error = (r.error || "couldn't start server") + tail;
+    } else {
+      w.error = null;
+    }
     renderWorktreePanel(true);
     setTimeout(() => renderWorktreePanel(true), 1500); // catch the port once it binds
     return;
