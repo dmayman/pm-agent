@@ -45,6 +45,26 @@ const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
   .replace(/"/g,"&quot;");
 
+// Inline icon set (Lucide's outline glyphs, vendored as bare SVG — no bundler in this app, so a
+// package-manager dependency isn't reachable; this is the same markup `import`ing the library
+// would hand you). Sized in em units so each one scales with its surrounding text, and rendered
+// as real vector shapes instead of Unicode glyphs, which vary in weight/baseline across fonts.
+const ICON_PATHS = {
+  branch: '<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
+  chevronDown: '<polyline points="6 9 12 15 18 9"/>',
+  chevronRight: '<polyline points="9 18 15 12 9 6"/>',
+  play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+  plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  externalLink: '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>',
+  arrowUp: '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>',
+  arrowDown: '<line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/>',
+};
+function icon(name, cls){
+  return `<svg class="icon${cls ? " " + cls : ""}" viewBox="0 0 24 24" fill="none" stroke="currentColor" `
+    + `stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name]}</svg>`;
+}
+
 // Thread summaries lead with a **bold** headline sentence. Escape first (so the text is
 // safe), then turn the surviving ** markers into <strong>. Nothing else is interpreted.
 const fmtSummary = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
@@ -165,7 +185,7 @@ function refChips(refs){
   const out = [];
   if(refs.issue != null) out.push(refChip("issue", "issue", `<span class="k">#</span>${esc(refs.issue)}`, refs.issue));
   if(refs.pr != null)    out.push(refChip("pr", "pr", `<span class="k">PR</span>${esc(refs.pr)}`, refs.pr));
-  if(refs.branch)        out.push(refChip("branch", "branch", `<span class="k">⎇</span>${esc(refs.branch)}`, refs.branch));
+  if(refs.branch)        out.push(refChip("branch", "branch", `<span class="k">${icon("branch")}</span>${esc(refs.branch)}`, refs.branch));
   if(refs.commit)        out.push(refChip("commit", "commit", `${esc(String(refs.commit).slice(0,7))}`, refs.commit));
   return out.join("");
 }
@@ -191,7 +211,7 @@ const state = {
   primed: false,           // first render done -> flashing enabled
   sig: "",                 // last-rendered signature per view
   // worktrees panel (right rail on Work)
-  wt: { menuBranch:null, editCmd:null, error:null, mergedOpen:false, busy:new Set() },
+  wt: { openMenu:null, editCmd:null, error:null, mergedOpen:false, busy:new Set() },
   wtData: null,            // last /api/worktrees payload (for no-network repaints)
   wtSig: "",               // last-rendered panel signature
 };
@@ -428,8 +448,8 @@ function issueRow(iss){
   const brUrl = iss.branch ? ghUrl("branch", iss.branch) : null;
   const branch = !iss.branch ? ""
     : brUrl
-    ? `<a class="issue-branch" href="${esc(brUrl)}" target="_blank" rel="noopener"><span class="k">⎇</span>${esc(iss.branch)}</a>`
-    : `<span class="issue-branch"><span class="k">⎇</span>${esc(iss.branch)}</span>`;
+    ? `<a class="issue-branch" href="${esc(brUrl)}" target="_blank" rel="noopener"><span class="k">${icon("branch")}</span>${esc(iss.branch)}</a>`
+    : `<span class="issue-branch"><span class="k">${icon("branch")}</span>${esc(iss.branch)}</span>`;
   return `<div class="issue-row ${unf ? "unfin" : ""}" style="--pc:${lm.pc}">`
     + `<span class="issue-pill"><span class="ip-dot"></span>${esc(lm.label)}</span>`
     + num
@@ -510,7 +530,7 @@ function unfinishedPanel(items){
       + `<span class="unf-kind">${esc(kind)}</span>`
       + `<span class="unf-num">#${esc(u.number)}</span>`
       + `<span class="unf-title">${esc(u.title)}</span>`
-      + (u.branch ? `<span class="unf-branch"><span class="k">⎇</span>${esc(u.branch)}</span>` : "")
+      + (u.branch ? `<span class="unf-branch"><span class="k">${icon("branch")}</span>${esc(u.branch)}</span>` : "")
       + `<span class="unf-thread">${esc(u.thread.title)}</span>`
       + `</a>`;
   }).join("");
@@ -705,127 +725,146 @@ async function renderInflight(force){
 
 // ---- worktrees panel (right rail on Work) ----------------------------------
 // Organized by BRANCH. A worktree can only hold one branch at a time, so "which worktree is on
-// which branch" is really a property of the branch — every local branch is a row, and the row
-// says which worktree (if any) has it checked out and runs its dev server. The main worktree
-// (the real repo folder) is called out by name; linked worktrees show their folder. Each branch's
-// worktree pill opens a popover to check the branch out into an existing worktree or add a new
-// one — the same control whether or not a worktree is currently on the branch. Merged branches
-// with no worktree collapse into a dropdown. Renders into #workAside beside the Work timeline.
+// which branch" is really a property of the branch — every local branch is a card, pinned with
+// the default branch first. A card's primary action (top line) is the Run split-button when it
+// has a worktree to run from, or a ghost "+ worktree" button when it doesn't; which worktree it's
+// checked into (the repo's own primary checkout, shown with ⌂, or a linked worktree's folder name)
+// is secondary info on the second line, only present once a worktree exists. Merged branches with
+// no worktree collapse into a dropdown. Renders into #workAside beside the Work timeline.
 
 // ahead/behind chip vs the default branch — "↑2" = 2 commits ahead, "↓1" = 1 behind.
-function divergeChip(ab){
+function divergeChip(ab, baseName){
   if(!ab || (!ab.ahead && !ab.behind)) return "";
+  const base = baseName || "default";
   const parts = [];
-  if(ab.ahead)  parts.push(`<span class="wt-ahead">↑${ab.ahead}</span>`);
-  if(ab.behind) parts.push(`<span class="wt-behind">↓${ab.behind}</span>`);
+  if(ab.ahead)  parts.push(`<span class="wt-ahead" title="${ab.ahead} commit${ab.ahead === 1 ? "" : "s"} ahead of ${esc(base)}">${icon("arrowUp")}${ab.ahead}</span>`);
+  if(ab.behind) parts.push(`<span class="wt-behind" title="${ab.behind} commit${ab.behind === 1 ? "" : "s"} behind ${esc(base)}">${icon("arrowDown")}${ab.behind}</span>`);
   return `<span class="wt-diverge">${parts.join("")}</span>`;
 }
 
-// A worktree's human label: the main checkout is "main worktree"; linked ones show their folder.
-function wtLabel(wt){ return wt.isMain ? "main worktree" : wt.name; }
+// A worktree's human label: the repo's own checkout is "Primary"; linked ones show their folder.
+function wtLabel(wt){ return wt.isMain ? "Primary" : wt.name; }
 
-// dev-server controls for the worktree a branch is checked out in (live link+stop / start / set).
-function serverControls(wt){
-  const w = state.wt;
-  const key = wt.path;
-  const busy = w.busy.has("srv:" + key);
-  let srv;
-  if(wt.serverState === "live" && wt.servers.length){
-    const s = wt.servers[0];
-    srv = `<div class="wtp-srv live">`
-      + `<a class="wtp-open" href="${esc(s.url)}" target="_blank" rel="noopener"><span class="wtp-dot"></span>localhost:${esc(s.port)}<span class="arw"> ↗</span></a>`
-      + `<button class="wtp-btn stop" data-act="stop" data-wt="${esc(key)}">stop</button></div>`;
-  } else if(wt.serverState === "starting"){
-    srv = `<div class="wtp-srv starting"><span class="wtp-spin"></span><span class="wtp-starting">starting…</span>`
-      + `<button class="wtp-btn stop" data-act="stop" data-wt="${esc(key)}">stop</button></div>`;
-  } else if(wt.devCommand){
-    srv = `<div class="wtp-srv"><button class="wtp-btn start" data-act="start" data-wt="${esc(key)}" ${busy ? "disabled" : ""}>▶ dev server</button>`
-      + `<button class="wtp-cmd" data-act="editcmd" data-wt="${esc(key)}" title="edit dev command"><code>${esc(wt.devCommand)}</code></button></div>`;
-  } else {
-    srv = `<div class="wtp-srv"><button class="wtp-btn ghost" data-act="editcmd" data-wt="${esc(key)}">set dev command…</button></div>`;
-  }
-  const editor = w.editCmd === key
-    ? `<div class="wtp-editor"><input type="text" class="wtp-input" id="wtpCmdInput" value="${esc(wt.devCommand || "")}" placeholder="e.g. npm run dev" spellcheck="false" autocomplete="off" />`
-      + `<button class="wtp-btn save" data-act="savecmd">save</button>`
-      + `<button class="wtp-btn ghost" data-act="canceledit">cancel</button></div>`
-    : "";
-  return srv + editor;
+// worktree folder names are often <branch-slug>-<hash>; keep both ends readable on one line
+// ("agent-…555d78") rather than clipping the tail, which is where the hash actually lives.
+function midEllipsis(s, head = 10, tail = 8){
+  s = String(s);
+  return s.length <= head + tail + 1 ? s : s.slice(0, head) + "…" + s.slice(-tail);
 }
 
-// The worktree control for a branch — the SAME element whether or not a worktree is on it. Click
-// it to open the picker (set the branch into a worktree, move it, or spin up a new one).
-function wtPill(b, wtOnBranch, menuOpen){
-  const on = menuOpen ? " on" : "";
-  if(wtOnBranch){
-    const kind = wtOnBranch.isMain ? " mainwt" : "";
-    return `<button class="wtp-pill${kind}${on}" data-act="wtmenu" data-branch="${esc(b.name)}" `
-      + `title="checked out in ${esc(wtOnBranch.path)} — click to change">`
-      + `<span class="wtp-pill-dot"></span>${esc(wtLabel(wtOnBranch))}<span class="wtp-pill-cv">⌄</span></button>`;
+// The Run split-button for a branch's worktree: live (open link + stop), starting (spinner +
+// stop), or idle (▶Run + a caret that opens the run-menu — start disabled with no command yet).
+function runControl(wt, menuOpen){
+  const key = wt.path;
+  const busy = state.wt.busy.has("srv:" + key);
+  if(wt.serverState === "live" && wt.servers.length){
+    const s = wt.servers[0];
+    return `<div class="wtp-run live">`
+      + `<a class="wtp-open" href="${esc(s.url)}" target="_blank" rel="noopener"><span class="wtp-dot"></span>localhost:${esc(s.port)}<span class="arw">${icon("externalLink")}</span></a>`
+      + `<button class="wtp-btn stop" data-act="stop" data-wt="${esc(key)}">stop</button></div>`;
   }
-  return `<button class="wtp-pill ghost${on}" data-act="wtmenu" data-branch="${esc(b.name)}" `
-    + `title="check this branch out in a worktree">＋ worktree</button>`;
+  if(wt.serverState === "starting"){
+    return `<div class="wtp-run starting"><span class="wtp-spin"></span><span class="wtp-starting">starting…</span>`
+      + `<button class="wtp-btn stop" data-act="stop" data-wt="${esc(key)}">stop</button></div>`;
+  }
+  const title = wt.devCommand ? esc(wt.devCommand) : "no run command set";
+  return `<div class="wtp-run split">`
+    + `<button class="wtp-btn run-main" data-act="start" data-wt="${esc(key)}" ${busy || !wt.devCommand ? "disabled" : ""} title="${title}">${icon("play")}<span>Run</span></button>`
+    + `<button class="wtp-btn run-caret wtp-trigger${menuOpen ? " on" : ""}" data-act="runmenu" data-wt="${esc(key)}" aria-label="run options">${icon("chevronDown")}</button>`
+    + `</div>`;
+}
+
+// the run-menu: just "edit run command", or the inline editor once that's been clicked.
+function runMenuHtml(wt){
+  const key = wt.path;
+  if(state.wt.editCmd === key){
+    return `<div class="wtp-menu run-menu"><div class="wtp-editor">`
+      + `<input type="text" class="wtp-input" id="wtpCmdInput" value="${esc(wt.devCommand || "")}" placeholder="e.g. npm run dev" spellcheck="false" autocomplete="off" />`
+      + `<button class="wtp-btn save" data-act="savecmd">save</button>`
+      + `<button class="wtp-btn ghost" data-act="canceledit">cancel</button></div></div>`;
+  }
+  return `<div class="wtp-menu run-menu">`
+    + `<button class="wtp-menu-opt" data-act="editcmd" data-wt="${esc(key)}"><span class="wtp-menu-name">Edit run command</span></button>`
+    + `</div>`;
+}
+
+// the worktree/checkout indicator — a fixed-width column on the first line, rendered only when
+// a worktree is checked out. Click it to open the same picker as the ghost "+ worktree" button.
+function wtPill(b, wt, menuOpen){
+  const on = menuOpen ? " on" : "";
+  const live = wt.serverState === "live" ? " live" : "";
+  return `<button class="wtp-pill wtp-trigger${on}" data-act="wtmenu" data-branch="${esc(b.name)}" `
+    + `title="checked out in ${esc(wt.path)} — click to change">`
+    + `<span class="wtp-pill-dot${live}"></span><span class="wtp-pill-txt">${esc(wtLabel(wt))}</span>`
+    + `<span class="wtp-pill-cv">${icon("chevronDown")}</span></button>`;
+}
+
+// no worktree yet — the top-line primary action is to get one.
+function wtGhostBtn(branch, menuOpen){
+  const on = menuOpen ? " on" : "";
+  return `<button class="wtp-pill ghost wtp-trigger${on}" data-act="wtmenu" data-branch="${esc(branch)}" `
+    + `title="check this branch out in a worktree">${icon("plus")} worktree</button>`;
 }
 
 // the picker: every worktree (and where it points) + a "new worktree" option, for one branch.
 function wtpWtMenu(branch, worktrees, currentPath){
   const rows = worktrees.map((wt) => {
     const holds = wt.path === currentPath;
-    const where = wt.detached ? `detached` : `⎇${esc(wt.branch || "—")}`;
+    const where = wt.detached ? `detached` : `${icon("branch")}${esc(wt.branch || "—")}`;
+    const label = wtLabel(wt);
     return `<button class="wtp-menu-opt${holds ? " cur" : ""}" data-act="checkout" data-wt="${esc(wt.path)}" data-branch="${esc(branch)}">`
-      + `<span class="wtp-menu-name">${esc(wtLabel(wt))}${holds ? `<span class="wtp-menu-check">✓ here</span>` : ""}</span>`
+      + `<span class="wtp-menu-name" title="${esc(label)}">${esc(midEllipsis(label))}</span>`
       + `<span class="wtp-menu-cur">${where}</span></button>`;
   }).join("");
   return `<div class="wtp-menu">`
-    + `<div class="wtp-menu-head">check out ⎇${esc(branch)} in…</div>`
     + (rows || `<span class="wtp-menu-empty">no worktrees</span>`)
     + `<button class="wtp-menu-opt add" data-act="create" data-branch="${esc(branch)}">`
-    + `<span class="wtp-menu-name">＋ new worktree</span>`
+    + `<span class="wtp-menu-name">${icon("plus")} new worktree</span>`
     + `<span class="wtp-menu-cur">from this branch</span></button>`
     + `</div>`;
 }
 
-// one branch row: name + divergence + its worktree pill; the dev server below when checked out.
-function wtpBranchRow(b, worktrees){
+// one branch card: name + divergence + the worktree indicator (fixed width, so it lines up down
+// the list) on top; the Run control — only once a worktree exists — on the line beneath it.
+function wtpBranchRow(b, worktrees, baseName){
   const w = state.wt;
   const wtOnBranch = b.worktreePath ? worktrees.find((x) => x.path === b.worktreePath) : null;
-  const menuOpen = w.menuBranch === b.name;
+  const checkoutOpen = w.openMenu && w.openMenu.type === "checkout" && w.openMenu.branch === b.name;
+  const runOpen = !!(wtOnBranch && w.openMenu && w.openMenu.type === "run" && w.openMenu.wt === wtOnBranch.path);
   const live = !!(wtOnBranch && wtOnBranch.serverState === "live");
-  const nm = `<span class="wtp-bname"><span class="k">⎇</span>${esc(b.name)}`
+  const nm = `<span class="wtp-bname"><span class="k">${icon("branch")}</span><span class="wtp-bname-txt">${esc(b.name)}</span>`
     + (b.isDefault ? `<span class="wtp-def">default</span>` : "") + `</span>`;
 
-  let h = `<div class="wtp-brow${wtOnBranch ? " has-wt" : ""}${live ? " live" : ""}">`;
-  h += `<div class="wtp-brow-top">${nm}${divergeChip(b.ahead)}<span class="sp"></span>`
-    + wtPill(b, wtOnBranch, menuOpen) + `</div>`;
-  if(wtOnBranch) h += `<div class="wtp-brow-srv">${serverControls(wtOnBranch)}</div>`;
-  if(menuOpen) h += wtpWtMenu(b.name, worktrees, b.worktreePath);
+  let h = `<div class="wtp-brow${live ? " live" : ""}">`;
+  h += `<div class="wtp-brow-top">${nm}${divergeChip(b.ahead, baseName)}`
+    + (wtOnBranch ? wtPill(b, wtOnBranch, checkoutOpen) : wtGhostBtn(b.name, checkoutOpen)) + `</div>`;
+  if(wtOnBranch) h += `<div class="wtp-brow-run">${runControl(wtOnBranch, runOpen)}</div>`;
+  if(runOpen) h += runMenuHtml(wtOnBranch);
+  if(checkoutOpen) h += wtpWtMenu(b.name, worktrees, b.worktreePath);
   return h + `</div>`;
 }
 
 function panelHtml(worktrees, branches, data){
   const w = state.wt;
-  const closed = branches.filter((b) => b.merged && !b.worktreePath && !b.isDefault);
+  // the default branch is always the orientation point — pin it first regardless of recency.
+  const ordered = branches.slice().sort((a, b) => (a.isDefault ? 0 : 1) - (b.isDefault ? 0 : 1));
+  const closed = ordered.filter((b) => b.merged && !b.worktreePath && !b.isDefault);
   const closedSet = new Set(closed);
-  const active = branches.filter((b) => !closedSet.has(b));
+  const active = ordered.filter((b) => !closedSet.has(b));
   const liveCount = worktrees.reduce((n, x) => n + (x.serverState === "live" ? 1 : 0), 0);
-  const mainWt = worktrees.find((x) => x.isMain) || worktrees.find((x) => x.isCurrent);
-  const linked = worktrees.filter((x) => !x.isMain).length;
+  const baseName = data && data.defaultBranch;
 
   let h = `<div class="wtp">`;
   h += `<div class="wtp-head"><span class="wtp-title">Branches</span>`
     + `<span class="wtp-sub">${liveCount ? `${liveCount} server${liveCount === 1 ? "" : "s"} live` : `${active.length}`}</span></div>`;
-  if(mainWt){
-    const on = mainWt.detached ? `detached` : `<span class="k">⎇</span>${esc(mainWt.branch || "—")}`;
-    h += `<div class="wtp-summary">main worktree on ${on}`
-      + (linked ? ` · ${linked} linked worktree${linked === 1 ? "" : "s"}` : ``) + `</div>`;
-  }
-  if(w.error) h += `<div class="wtp-err"><span class="wtp-err-msg">${esc(w.error)}</span><button class="wtp-x" data-act="dismiss" aria-label="dismiss">×</button></div>`;
+  if(w.error) h += `<div class="wtp-err"><span class="wtp-err-msg">${esc(w.error)}</span><button class="wtp-x" data-act="dismiss" aria-label="dismiss">${icon("x")}</button></div>`;
   if(data && !data.serverScanned) h += `<div class="wtp-note">dev-server scan unavailable (lsof)</div>`;
 
-  h += active.map((b) => wtpBranchRow(b, worktrees)).join("") || `<div class="wtp-empty">no branches</div>`;
+  h += active.map((b) => wtpBranchRow(b, worktrees, baseName)).join("") || `<div class="wtp-empty">no branches</div>`;
   if(closed.length){
     h += `<button class="wtp-merged-toggle" data-act="togglemerged" aria-expanded="${w.mergedOpen}">`
-      + `<span class="chev">${w.mergedOpen ? "▾" : "▸"}</span> Merged <span class="wtp-sub">${closed.length}</span></button>`;
-    if(w.mergedOpen) h += `<div class="wtp-merged">${closed.map((b) => wtpBranchRow(b, worktrees)).join("")}</div>`;
+      + `<span class="chev">${icon(w.mergedOpen ? "chevronDown" : "chevronRight")}</span> Merged <span class="wtp-sub">${closed.length}</span></button>`;
+    if(w.mergedOpen) h += `<div class="wtp-merged">${closed.map((b) => wtpBranchRow(b, worktrees, baseName)).join("")}</div>`;
   }
   h += `</div>`;
   return h;
@@ -835,26 +874,48 @@ function panelHtml(worktrees, branches, data){
 function repaintPanel(){
   const aside = $("#workAside");
   if(!aside || !state.wtData) return;
+  hideBnameTip(); // the hovered element is about to be thrown away — don't leave its tip stuck
   aside.innerHTML = panelHtml(state.wtData.worktrees, state.wtData.branches, state.wtData);
-  if(state.wt.menuBranch) positionWtMenu();
+  if(state.wt.openMenu) positionWtMenu();
   state.wtSig = ""; // let the next poll reconcile against fresh data
 }
 
-// The worktree picker is position:fixed so the rail's scroll can't clip it — anchor it to the
-// open pill by hand, flipping above the pill when there's no room below. Reposition (rather than
-// close) on scroll/resize so it stays glued to the pill and survives the panel's own repaints.
-function wtMenuReflow(){ if(state.wt.menuBranch) positionWtMenu(); else detachWtMenu(); }
+// A truncated branch name's full text, shown the instant the pointer lands — a native `title`
+// tooltip has a multi-hundred-ms OS delay, which reads as sluggish for something this frequent.
+let bnameTipEl = null;
+function showBnameTip(target){
+  const txt = target.querySelector(".wtp-bname-txt");
+  if(!txt || txt.scrollWidth <= txt.clientWidth) return; // not actually truncated — nothing to add
+  hideBnameTip();
+  bnameTipEl = document.createElement("div");
+  bnameTipEl.className = "wtp-tip";
+  bnameTipEl.textContent = txt.textContent;
+  document.body.appendChild(bnameTipEl);
+  const r = target.getBoundingClientRect();
+  const tw = bnameTipEl.offsetWidth, th = bnameTipEl.offsetHeight; // forces layout
+  const left = Math.max(6, Math.min(r.left, window.innerWidth - tw - 6));
+  let top = r.top - th - 6;
+  if(top < 6) top = r.bottom + 6;
+  bnameTipEl.style.left = left + "px";
+  bnameTipEl.style.top = top + "px";
+}
+function hideBnameTip(){ if(bnameTipEl){ bnameTipEl.remove(); bnameTipEl = null; } }
+
+// Both the checkout picker and the run-menu are position:fixed so the rail's scroll can't clip
+// them — anchor to whichever trigger is open by hand, flipping above it when there's no room
+// below. Reposition (rather than close) on scroll/resize so it stays glued and survives repaints.
+function wtMenuReflow(){ if(state.wt.openMenu) positionWtMenu(); else detachWtMenu(); }
 function detachWtMenu(){
   window.removeEventListener("scroll", wtMenuReflow, true);
   window.removeEventListener("resize", wtMenuReflow);
 }
 function closeWtMenu(){
   detachWtMenu();
-  if(state.wt.menuBranch){ state.wt.menuBranch = null; repaintPanel(); }
+  if(state.wt.openMenu){ state.wt.openMenu = null; state.wt.editCmd = null; repaintPanel(); }
 }
 function positionWtMenu(){
   const menu = $("#workAside .wtp-menu");
-  const pill = $("#workAside .wtp-pill.on");
+  const pill = $("#workAside .wtp-trigger.on");
   if(!menu || !pill){ detachWtMenu(); return; }
   const r = pill.getBoundingClientRect();
   const mw = menu.offsetWidth, mh = menu.offsetHeight; // forces layout — coords are now valid
@@ -886,11 +947,12 @@ async function renderWorktreePanel(force){
   const sig = "wtp:" + JSON.stringify({
     w: worktrees.map((x) => [x.path, x.branch, x.serverState, (x.servers || []).map((s) => s.port), x.devCommand, x.ahead]),
     b: branches.map((x) => [x.name, x.worktreePath, x.merged, x.ahead, x.committedAt]),
-    ui: [w.menuBranch, w.editCmd, w.error, w.mergedOpen, [...w.busy]],
+    ui: [w.openMenu, w.editCmd, w.error, w.mergedOpen, [...w.busy]],
   });
   if(!force && sig === state.wtSig) return;
+  hideBnameTip(); // the hovered element is about to be thrown away — don't leave its tip stuck
   aside.innerHTML = panelHtml(worktrees, branches, data);
-  if(state.wt.menuBranch) positionWtMenu();
+  if(state.wt.openMenu) positionWtMenu();
   state.wtSig = sig;
 }
 
@@ -902,9 +964,19 @@ async function handleWtAction(el){
   const branch = el.dataset.branch;
 
   if(act === "togglemerged"){ w.mergedOpen = !w.mergedOpen; return repaintPanel(); }
-  if(act === "wtmenu"){ w.menuBranch = w.menuBranch === branch ? null : branch; return repaintPanel(); }
+  if(act === "wtmenu"){
+    const open = w.openMenu && w.openMenu.type === "checkout" && w.openMenu.branch === branch;
+    w.openMenu = open ? null : { type:"checkout", branch };
+    return repaintPanel();
+  }
+  if(act === "runmenu"){
+    const open = w.openMenu && w.openMenu.type === "run" && w.openMenu.wt === wt;
+    w.openMenu = open ? null : { type:"run", wt };
+    w.editCmd = null; // fresh open shows the menu, not straight into editing
+    return repaintPanel();
+  }
   if(act === "dismiss"){ w.error = null; return repaintPanel(); }
-  if(act === "canceledit"){ w.editCmd = null; return repaintPanel(); }
+  if(act === "canceledit"){ w.editCmd = null; w.openMenu = null; return repaintPanel(); }
   if(act === "editcmd"){
     w.editCmd = wt; repaintPanel();
     const i = $("#wtpCmdInput"); if(i){ i.focus(); i.select(); }
@@ -913,7 +985,7 @@ async function handleWtAction(el){
   if(act === "savecmd"){
     const i = $("#wtpCmdInput");
     const r = await apiPost("/api/devcommand", { command: i ? i.value : "" });
-    w.editCmd = null; w.error = r && r.error ? r.error : null;
+    w.editCmd = null; w.openMenu = null; w.error = r && r.error ? r.error : null;
     return renderWorktreePanel(true);
   }
   if(act === "start"){
@@ -933,13 +1005,13 @@ async function handleWtAction(el){
     return;
   }
   if(act === "create"){
-    w.menuBranch = null;
+    w.openMenu = null;
     const r = await apiPost("/api/worktree/create", { branch });
     w.error = r && r.ok === false ? (r.error || "couldn't create worktree") : null;
     return renderWorktreePanel(true);
   }
   if(act === "checkout"){
-    w.menuBranch = null;
+    w.openMenu = null;
     const r = await apiPost("/api/worktree/checkout", { worktree: wt, branch });
     w.error = r && r.ok === false ? (r.error || "couldn't move worktree") : null;
     return renderWorktreePanel(true);
@@ -1194,7 +1266,17 @@ function initInteractions(){
   viewEl.addEventListener("keydown", (e) => {
     if(e.target.id !== "wtpCmdInput") return;
     if(e.key === "Enter"){ e.preventDefault(); handleWtAction({ dataset:{ act:"savecmd" } }); }
-    else if(e.key === "Escape"){ e.preventDefault(); state.wt.editCmd = null; repaintPanel(); }
+    else if(e.key === "Escape"){ e.preventDefault(); state.wt.editCmd = null; state.wt.openMenu = null; repaintPanel(); }
+  });
+
+  // truncated branch names get an instant custom tip instead of the OS's delayed `title` tooltip
+  viewEl.addEventListener("mouseover", (e) => {
+    const nm = e.target.closest(".wtp-bname");
+    if(nm && nm.closest("#workAside")) showBnameTip(nm);
+  });
+  viewEl.addEventListener("mouseout", (e) => {
+    const nm = e.target.closest(".wtp-bname");
+    if(nm && (!e.relatedTarget || !nm.contains(e.relatedTarget))) hideBnameTip();
   });
 
   // view-mode links are anchors; the All/Unfinished filter is a stateful toggle
@@ -1220,8 +1302,8 @@ function initInteractions(){
   // dismiss the menu on an outside click or Escape
   document.addEventListener("click", (e) => {
     if(state.menuOpen && !e.target.closest("#repoMenu") && !e.target.closest("#repoBtn")) closeMenu();
-    // close the worktree picker when clicking away from it
-    if(state.wt.menuBranch && !e.target.closest(".wtp-menu") && !e.target.closest('[data-act="wtmenu"]')){
+    // close the checkout picker or run-menu when clicking away from it
+    if(state.wt.openMenu && !e.target.closest(".wtp-menu") && !e.target.closest(".wtp-trigger")){
       closeWtMenu();
     }
   });

@@ -65,15 +65,19 @@ function parseWorktrees(root) {
   return wts;
 }
 
-// The branch a new worktree diverges from — origin/HEAD when the remote advertises one, else
-// a local main/master. Returned as a rev-parseable ref ("origin/main" or "main").
+// The branch everything else (merged-check, ahead/behind) diffs against. Prefer the LOCAL
+// branch of the same name over the remote-tracking ref: origin/HEAD only tells us the *name*
+// ("main"), and if origin/main hasn't been fetched since local main last moved, diffing against
+// the stale remote ref makes freshly-merged branches look unmerged and inflates ahead/behind
+// counts. Fall back to the remote ref itself when there's no local copy (e.g. a fresh clone).
 function defaultBranch(root) {
   const remote = git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], root);
-  if (remote) return remote;
+  const remoteName = remote ? remote.replace(/^origin\//, "") : null;
+  if (remoteName && git(["rev-parse", "--verify", "--quiet", "refs/heads/" + remoteName], root)) return remoteName;
   for (const b of ["main", "master"]) {
     if (git(["rev-parse", "--verify", "--quiet", "refs/heads/" + b], root)) return b;
   }
-  return "";
+  return remote || "";
 }
 
 // commits `ref` is ahead of / behind `base`. `A...B --left-right --count` -> "behind ahead".

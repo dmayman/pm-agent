@@ -38,6 +38,11 @@
 }
 
 *{ box-sizing:border-box; }
+
+/* inline icon glyphs (see ICON_PATHS in app.js) — sized in em so each one tracks the font-size
+   of whatever it's dropped into, and vertically nudged to sit on the text baseline like a glyph. */
+.icon{ width:1em; height:1em; flex:none; vertical-align:-0.125em; }
+
 html,body{ height:100%; margin:0; }
 body{
   background:var(--bg);
@@ -602,27 +607,31 @@ a.ref:hover .k{ color:var(--ink-mute); }
   border:1px solid color-mix(in srgb, var(--t-blocked) 34%, transparent); }
 .wtp-err-msg{ flex:1; font-family:var(--mono); font-size:10.5px; line-height:1.5; color:#e8b0a8;
   word-break:break-word; }
-.wtp-x{ flex:none; background:none; border:none; color:var(--ink-mute); cursor:pointer;
-  font-size:14px; line-height:1; padding:0; }
+.wtp-x{ display:inline-flex; align-items:center; justify-content:center; flex:none;
+  background:none; border:none; color:var(--ink-mute); cursor:pointer; font-size:14px; padding:0; }
 .wtp-x:hover{ color:var(--ink); }
 
-/* one-line orientation: where the main worktree sits + how many linked trees exist */
-.wtp-summary{ font-family:var(--mono); font-size:10.5px; color:var(--ink-mute);
-  margin:-4px 0 16px; line-height:1.5; }
-.wtp-summary .k{ color:var(--ink-whisper); margin-right:1px; }
-
-.wtp-srv{ display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
-.wtp-btn{ font-family:var(--mono); font-size:10.5px; padding:4px 10px; border-radius:7px;
+.wtp-btn{ font-family:var(--mono); font-size:10.5px; line-height:1; padding:4px 10px; border-radius:7px;
   border:1px solid var(--line-strong); background:var(--bg-2); color:var(--ink-dim);
   cursor:pointer; transition:background .16s, color .16s, border-color .16s; }
 .wtp-btn:hover{ background:var(--bg-hi); color:var(--ink); }
 .wtp-btn:disabled{ opacity:0.5; cursor:default; }
-.wtp-btn.start{ color:var(--t-built); border-color:color-mix(in srgb, var(--t-built) 32%, transparent); }
-.wtp-btn.start:hover{ background:color-mix(in srgb, var(--t-built) 14%, var(--bg-2)); }
 .wtp-btn.stop{ color:var(--t-blocked); border-color:color-mix(in srgb, var(--t-blocked) 30%, transparent); }
 .wtp-btn.stop:hover{ background:color-mix(in srgb, var(--t-blocked) 14%, var(--bg-2)); }
 .wtp-btn.save{ color:var(--t-built); }
 .wtp-btn.ghost{ background:none; border-color:var(--line); color:var(--ink-mute); }
+
+/* the Run split-button: a primary "▶ Run" action fused to a caret that opens the run-menu */
+.wtp-run{ display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+.wtp-run.split{ gap:0; flex-wrap:nowrap; }
+.run-main{ display:inline-flex; align-items:center; gap:4px;
+  border-radius:7px 0 0 7px; border-right:none; color:var(--t-built);
+  border-color:color-mix(in srgb, var(--t-built) 32%, transparent); }
+.run-main:hover:not(:disabled){ background:color-mix(in srgb, var(--t-built) 14%, var(--bg-2)); }
+.run-caret{ display:inline-flex; align-items:center; justify-content:center;
+  border-radius:0 7px 7px 0; padding:4px 7px; color:var(--t-built);
+  border-color:color-mix(in srgb, var(--t-built) 32%, transparent); }
+.run-caret:hover, .run-caret.on{ color:var(--ink); background:color-mix(in srgb, var(--t-built) 14%, var(--bg-2)); }
 
 .wtp-open{ display:inline-flex; align-items:center; gap:6px; text-decoration:none;
   font-family:var(--mono); font-size:11px; font-weight:600; color:var(--t-built);
@@ -633,57 +642,55 @@ a.ref:hover .k{ color:var(--ink-mute); }
 .wtp-open .arw{ color:var(--t-built); }
 .wtp-dot{ width:6px; height:6px; border-radius:50%; background:var(--t-built);
   box-shadow:0 0 0 0 rgba(100,189,132,0.55); animation:pulse 3s ease-out infinite; }
-.wtp-cmd{ font-family:var(--mono); font-size:10px; color:var(--ink-whisper); background:none;
-  border:none; cursor:pointer; padding:2px 0; max-width:150px; overflow:hidden;
-  text-overflow:ellipsis; white-space:nowrap; text-align:left; }
-.wtp-cmd:hover{ color:var(--ink-mute); }
 .wtp-starting{ font-family:var(--mono); font-size:10.5px; color:var(--t-decided); }
 .wtp-spin{ width:10px; height:10px; border-radius:50%; display:inline-block;
   border:1.5px solid var(--line-strong); border-top-color:var(--t-decided);
   animation:spin .8s linear infinite; }
 @keyframes spin{ to{ transform:rotate(360deg); } }
 
-.wtp-editor{ display:flex; gap:6px; margin-top:8px; }
+.wtp-editor{ display:flex; gap:6px; }
 .wtp-input{ flex:1; min-width:0; font-family:var(--mono); font-size:10.5px; color:var(--ink);
   background:var(--bg); border:1px solid var(--line-strong); border-radius:7px; padding:5px 8px; }
 .wtp-input:focus{ outline:none; border-color:color-mix(in srgb, var(--t-built) 40%, transparent); }
 
-.wtp-brow{ padding:8px 2px; border-bottom:1px solid var(--line); }
-.wtp-brow:last-child{ border-bottom:none; }
-.wtp-brow.has-wt{ padding:10px 10px 11px; margin:5px 0; border:1px solid var(--line);
+/* every branch is the same card, whether or not it currently has a worktree */
+.wtp-brow{ padding:10px 10px 11px; margin:7px 0; border:1px solid var(--line);
   border-radius:11px; background:var(--bg-1); }
+.wtp-brow:first-child{ margin-top:0; }
 .wtp-brow.live{ border-color:color-mix(in srgb, var(--t-built) 30%, var(--line-strong)); }
-.wtp-brow-top{ display:flex; align-items:center; gap:8px; }
-.wtp-brow-srv{ margin-top:9px; }
-.wtp-bname{ display:flex; align-items:center; gap:6px; min-width:0; font-family:var(--mono);
-  font-size:11px; color:var(--ink-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.wtp-brow.has-wt .wtp-bname{ font-size:12px; color:var(--ink); font-weight:600; }
-.wtp-bname .k{ color:var(--ink-whisper); font-weight:400; }
+.wtp-brow-top{ display:flex; align-items:center; gap:6px; }
+.wtp-brow-run{ margin-top:9px; }
+/* the name grows to fill whatever room the diverge chip + worktree column don't need, rather
+   than clipping early against a fixed width while trailing space goes unused */
+.wtp-bname{ display:flex; align-items:center; gap:6px; flex:1 1 0; min-width:0;
+  font-family:var(--mono); font-size:12px; color:var(--ink); font-weight:600; }
+.wtp-bname .k{ flex:none; color:var(--ink-whisper); font-weight:400; }
+.wtp-bname-txt{ min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .wtp-def{ flex:none; font-family:var(--mono); font-size:8px; letter-spacing:0.06em;
   text-transform:uppercase; color:var(--ink-mute); border:1px solid var(--line-strong);
   border-radius:20px; padding:1px 5px; }
 
-/* the worktree pill — the single set-or-change control on every branch row */
-.wtp-pill{ flex:none; display:inline-flex; align-items:center; gap:5px; cursor:pointer;
+/* the worktree/checkout indicator — fixed width so it forms its own column on the first line,
+   whether it's showing a checked-out worktree or the ghost "+ worktree" prompt */
+.wtp-pill{ flex:none; width:88px; display:inline-flex; align-items:center; gap:5px; cursor:pointer;
   font-family:var(--mono); font-size:9.5px; padding:3px 8px; border-radius:20px;
-  border:1px solid color-mix(in srgb, var(--t-built) 30%, transparent); color:var(--t-built);
-  background:color-mix(in srgb, var(--t-built) 9%, transparent); max-width:150px;
-  white-space:nowrap; overflow:hidden; transition:background .16s, border-color .16s, color .16s; }
-.wtp-pill:hover, .wtp-pill.on{ background:color-mix(in srgb, var(--t-built) 16%, transparent);
-  border-color:color-mix(in srgb, var(--t-built) 45%, transparent); }
+  border:1px solid var(--line-strong); color:var(--ink);
+  background:var(--bg-2);
+  overflow:hidden; transition:background .16s, border-color .16s, color .16s; }
+.wtp-pill-txt{ min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.wtp-pill:hover, .wtp-pill.on{ background:var(--bg-hi); border-color:var(--ink-whisper); }
 .wtp-pill-dot{ flex:none; width:5px; height:5px; border-radius:50%; background:currentColor; }
+.wtp-pill-dot.live{ background:var(--t-built); }
 .wtp-pill-cv{ flex:none; color:var(--ink-mute); font-size:9px; margin-left:1px; }
-.wtp-pill.mainwt{ color:var(--ink-dim); border-color:var(--line-strong);
-  background:var(--bg-2); }
-.wtp-pill.mainwt:hover, .wtp-pill.mainwt.on{ background:var(--bg-hi); border-color:var(--ink-whisper); }
 .wtp-pill.ghost{ color:var(--ink-mute); border:1px dashed var(--line-strong); background:none; }
 .wtp-pill.ghost:hover, .wtp-pill.ghost.on{ color:var(--ink-dim); border-color:var(--ink-whisper);
   background:var(--bg-1); }
 
-.wtp-menu{ position:fixed; top:0; left:0; z-index:60; min-width:200px; max-width:280px;
+.wtp-menu{ position:fixed; top:0; left:0; z-index:60; min-width:260px; max-width:360px;
   padding:5px; border-radius:10px; background:var(--bg-2); border:1px solid var(--line-strong);
   box-shadow:0 10px 28px rgba(0,0,0,0.45); animation:menu-in .12s ease-out; }
-.wtp-menu-head{ font-family:var(--mono); font-size:9px; color:var(--ink-whisper); padding:3px 7px 6px; }
+.wtp-menu.run-menu{ min-width:180px; max-width:none; }
+.wtp-menu.run-menu .wtp-editor{ padding:2px; }
 .wtp-menu-opt{ display:flex; align-items:baseline; justify-content:space-between; gap:10px;
   width:100%; text-align:left; padding:6px 7px; border-radius:7px; border:none; background:none;
   cursor:pointer; }
@@ -691,11 +698,17 @@ a.ref:hover .k{ color:var(--ink-mute); }
 .wtp-menu-opt.cur{ background:color-mix(in srgb, var(--t-built) 10%, transparent); }
 .wtp-menu-opt.add{ margin-top:3px; border-top:1px solid var(--line); border-radius:0 0 7px 7px; }
 .wtp-menu-opt.add .wtp-menu-name{ color:var(--t-built); }
-.wtp-menu-name{ display:inline-flex; align-items:baseline; gap:6px; min-width:0;
+/* names are already middle-truncated in JS ("abc…xyz"), so this is just a hard backstop */
+.wtp-menu-name{ display:inline-flex; align-items:baseline; gap:6px; min-width:0; max-width:100%;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   font-family:var(--mono); font-size:11px; color:var(--ink); }
-.wtp-menu-check{ flex:none; font-size:8.5px; letter-spacing:0.04em; color:var(--t-built); }
 .wtp-menu-cur{ flex:none; font-family:var(--mono); font-size:9.5px; color:var(--ink-mute); }
 .wtp-menu-empty{ font-family:var(--mono); font-size:10px; color:var(--ink-whisper); padding:4px 7px; }
+
+/* the instant full-branch-name tip — no entrance animation, so there's no delay to feel */
+.wtp-tip{ position:fixed; top:0; left:0; z-index:70; padding:5px 9px; border-radius:7px;
+  background:var(--bg-2); border:1px solid var(--line-strong); box-shadow:0 8px 20px rgba(0,0,0,0.4);
+  font-family:var(--mono); font-size:11px; color:var(--ink); white-space:nowrap; pointer-events:none; }
 
 .wtp-merged-toggle{ display:flex; align-items:center; gap:7px; width:100%; margin-top:8px;
   padding:6px 2px; background:none; border:none; cursor:pointer; font-family:var(--mono);
@@ -704,7 +717,7 @@ a.ref:hover .k{ color:var(--ink-mute); }
 .wtp-merged-toggle .chev{ color:var(--ink-whisper); }
 .wtp-merged{ opacity:0.82; }
 
-/* ahead/behind chips (shared by worktree + branch rows) */
+/* ahead/behind chips (shared by worktree + branch rows); title attrs carry the hover tooltip */
 .wt-diverge{ flex:none; display:inline-flex; gap:5px; font-family:var(--mono); font-size:10px;
   font-variant-numeric:tabular-nums; }
 .wt-ahead{ color:var(--t-built); }
