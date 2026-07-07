@@ -273,17 +273,93 @@ async function refresh(force){
 /* Re-render into `viewEl` while keeping the scroll position stable.
    New events prepend at the top and push content down; we compensate so the
    viewport doesn't jump — unless the user is already at the very top, where
-   we let new arrivals slide into view. */
+   we let new arrivals slide into view.
+   Rendering goes through morphInto (not innerHTML=) so unchanged rows keep their
+   DOM identity: only genuinely new/changed nodes are touched, which is what stops
+   the whole view flashing (and re-running its entry animations) on every refresh. */
 function paint(html, { scrollSafe, target } = {}){
   const el = target || viewEl;
-  if(!scrollSafe){ el.innerHTML = html; return; }
+  if(!scrollSafe){ morphInto(el, html); return; }
   const nearTop = mainEl.scrollTop < 48;
   const prevTop = mainEl.scrollTop;
   const prevH = mainEl.scrollHeight;
-  el.innerHTML = html;
+  morphInto(el, html);
   if(!nearTop){
     const delta = mainEl.scrollHeight - prevH;
     if(delta > 0) mainEl.scrollTop = prevTop + delta;
+  }
+}
+
+// ---- keyed DOM morph (dependency-free, ~a tiny morphdom) --------------------
+// Reconcile `el`'s children to match `html`, reusing existing nodes instead of rebuilding the
+// subtree. Repeated rows carry a data-key (event id, thread id, day) so a prepended or reordered
+// row reuses its node rather than shifting every sibling; unkeyed nodes match positionally by
+// tag + first class, so a structural swap (a list becoming an empty state) cleanly replaces.
+// The payoff: steady-state refreshes mutate nothing, and new arrivals are the only nodes
+// inserted — so CSS entry animations fire once, for real changes, and never as a full-view flash.
+function morphInto(el, html){
+  const tmp = el.cloneNode(false); // empty same-type container = correct parsing context
+  tmp.innerHTML = html;
+  morphChildren(el, tmp);
+}
+
+function keyOf(n){ return n.nodeType === 1 ? n.getAttribute("data-key") : null; }
+function firstClass(n){ return (n.getAttribute("class") || "").split(" ")[0] || ""; }
+function sameType(a, b){
+  if(a.nodeType !== b.nodeType) return false;
+  if(a.nodeType !== 1) return true;                 // text/comment: node type alone is enough
+  return a.nodeName === b.nodeName && firstClass(a) === firstClass(b);
+}
+
+function morphEl(from, to){
+  // sync attributes both ways
+  const fa = from.attributes, ta = to.attributes;
+  for(let i = fa.length - 1; i >= 0; i--){ if(!to.hasAttribute(fa[i].name)) from.removeAttribute(fa[i].name); }
+  for(let i = 0; i < ta.length; i++){ const a = ta[i]; if(from.getAttribute(a.name) !== a.value) from.setAttribute(a.name, a.value); }
+  // never stomp a field the user is typing in (its value/caret live in the DOM, not the html)
+  const tag = from.tagName;
+  if(from === document.activeElement && (tag === "INPUT" || tag === "TEXTAREA")) return;
+  morphChildren(from, to);
+}
+
+function morphChildren(from, to){
+  // Bucket the current children: keyed by their key, unkeyed in document order.
+  const oldKeyed = new Map();
+  const oldUnkeyed = [];
+  for(let c = from.firstChild; c; c = c.nextSibling){
+    const k = keyOf(c);
+    if(k) oldKeyed.set(k, c); else oldUnkeyed.push(c);
+  }
+  // Walk the desired children, reusing a matched node (morphing it) or importing a fresh one.
+  let u = 0;
+  const result = [];
+  for(let n = to.firstChild; n; n = n.nextSibling){
+    const k = keyOf(n);
+    let match = null;
+    if(k){
+      if(oldKeyed.has(k)){ match = oldKeyed.get(k); oldKeyed.delete(k); }
+    } else {
+      while(u < oldUnkeyed.length){
+        const cand = oldUnkeyed[u++];
+        if(sameType(cand, n)){ match = cand; break; } // else: incompatible — let it be dropped
+      }
+    }
+    if(match){
+      if(match.nodeType === 1) morphEl(match, n);
+      else if(match.nodeValue !== n.nodeValue) match.nodeValue = n.nodeValue;
+      result.push(match);
+    } else {
+      result.push(document.importNode(n, true)); // brand-new node → entry animation fires here
+    }
+  }
+  // Drop any current child not being kept, then splice `from` into exactly `result` order,
+  // reusing nodes (insertBefore moves an existing node rather than cloning it).
+  const keep = new Set(result);
+  for(let c = from.firstChild; c;){ const next = c.nextSibling; if(!keep.has(c)) from.removeChild(c); c = next; }
+  let ref = from.firstChild;
+  for(const node of result){
+    if(node === ref){ ref = ref.nextSibling; continue; }
+    from.insertBefore(node, ref);
   }
 }
 
@@ -306,7 +382,7 @@ function eventRow(ev, i){
     chips += refs;
   }
 
-  return `<div class="event ${isNew ? "is-new" : ""} ${dim ? "dim" : ""}" `
+  return `<div class="event ${isNew ? "is-new" : ""} ${dim ? "dim" : ""}" data-key="ev-${esc(ev.id)}" `
     + `style="--hue:${hue};--d:${delay}ms">`
     + `<div class="time">${fmtTime(d)}</div>`
     + `<div class="rail-col"><span class="${nodeClass(ev.type)}"></span></div>`
@@ -339,7 +415,7 @@ function renderDays(events){
   return groupByDay(events).map((g) => {
     const dl = dayLabel(g.when);
     const rows = g.items.map((ev) => eventRow(ev, idx++)).join("");
-    return `<div class="day-group"><div class="day-head">`
+    return `<div class="day-group" data-key="day-${esc(g.key)}"><div class="day-head">`
       + `<span class="d-label">${esc(dl.label)}</span>`
       + `<span class="d-date">${esc(dl.date)}</span>`
       + `<span class="d-rule"></span>`
@@ -501,7 +577,7 @@ function threadRow(th, key, i){
   } else {
     hero = `<p class="tr-rest none">Backlog initiative — ${w.total || 0} issue${w.total === 1 ? "" : "s"}, no summary yet.</p>`;
   }
-  return `<article class="trow ${open ? "open" : ""}" data-href="#/thread/${esc(th.id)}" `
+  return `<article class="trow ${open ? "open" : ""}" data-key="trow-${esc(key)}" data-href="#/thread/${esc(th.id)}" `
     + `style="--d:${Math.min(i, 12) * 26}ms">`
     + `<button class="trow-head" data-key="${esc(key)}" data-id="${esc(th.id)}" aria-expanded="${open}">`
     +   `<span class="chev">›</span>`
@@ -629,7 +705,7 @@ async function renderWork(force){
         : "";
       if(!rows && !loose) return "";
       const dl = dayLabel(g.when);
-      return `<div class="day-group"><div class="day-head">`
+      return `<div class="day-group" data-key="day-${esc(g.key)}"><div class="day-head">`
         + `<span class="d-label">${esc(dl.label)}</span><span class="d-date">${esc(dl.date)}</span>`
         + `<span class="d-rule"></span><span class="d-count">${entries.length + (loose ? g.loose.length : 0)}</span>`
         + `</div>${rows}${loose}</div>`;
@@ -681,7 +757,7 @@ function threadCard(th, events, i){
   const badge = unfin
     ? `<span class="unfin-badge">${unfin} unfinished</span>`
     : `<span class="pill" style="--pc:${statusMeta(th.status).pc}"><span class="pdot"></span>${esc(statusMeta(th.status).label)}</span>`;
-  return `<div class="card" data-href="#/thread/${esc(th.id)}" style="--accent:${accent};--d:${Math.min(i,8)*40}ms">`
+  return `<div class="card" data-key="card-${esc(th.id)}" data-href="#/thread/${esc(th.id)}" style="--accent:${accent};--d:${Math.min(i,8)*40}ms">`
     + `<div class="card-top"><span class="card-title">${esc(th.title || "Untitled thread")}</span>${badge}</div>`
     + blurb
     + lifecycleIndicator(w)
@@ -1325,13 +1401,31 @@ async function boot(){
   await loadMeta();
   window.addEventListener("hashchange", onRoute);
   await onRoute();
-  // gentle live polling
-  setInterval(() => { loadMeta(); refresh(false); }, 4000);
-  // keep relative ages / dates fresh even without new data; also pick up new projects
+  startLiveUpdates();
+  // keep relative ages / dates fresh even without new data; also pick up new projects. With
+  // morph rendering this forced pass no longer flashes — it just reconciles what actually moved.
   setInterval(() => {
     loadProjects();
     if(state.view === "inflight" || state.view === "work") refresh(true);
   }, 60000);
+}
+
+// Live updates over a single Server-Sent Events stream: the server pushes a frame whenever the
+// ledger changes, so new data lands in ~1s with no polling. EventSource reconnects on its own
+// after a server restart (honoring the server's `retry:` hint); a slow fallback poll covers the
+// rare case where the stream never opens (e.g. a proxy that buffers text/event-stream).
+function startLiveUpdates(){
+  const pull = () => { loadMeta(); refresh(false); };
+  let fallback = null;
+  const startFallback = () => { if(!fallback) fallback = setInterval(pull, 8000); };
+  const stopFallback = () => { if(fallback){ clearInterval(fallback); fallback = null; } };
+  if(typeof EventSource === "undefined"){ startFallback(); return; } // very old browser
+  let es;
+  try{ es = new EventSource(withProject("/api/stream")); }
+  catch(e){ startFallback(); return; }
+  es.onopen = stopFallback;                 // stream is live — the poll isn't needed
+  es.onmessage = pull;                       // hello + every change frame → refetch current view
+  es.onerror = startFallback;                // dropped; EventSource retries, poll bridges the gap
 }
 
 boot();
