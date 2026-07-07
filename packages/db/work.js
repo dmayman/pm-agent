@@ -166,6 +166,26 @@ export async function clusterIntoInitiatives(db, repo, { guidance } = {}) {
     })
     .filter(Boolean);
 
+  // The current (soft) grouping: existing threads that already have issues attached —
+  // including the observer's soft links — but that AREN'T pinned-locked above. We show these
+  // to Haiku as initiatives to PREFER reusing (advisory, not locked) so it keeps the same
+  // name when an issue still fits, rather than re-homing it and orphaning the thread. They're
+  // deliberately NOT seeded into byName: name-matching in the rebuild reuses the thread by
+  // title when Haiku keeps the name, and the empty-thread DELETE cleans it up when it doesn't.
+  const lockedThreadIds = new Set(locked.map((l) => l.threadId));
+  const advisoryByThread = new Map();
+  for (const i of all) {
+    if (!i.thread_id || lockedThreadIds.has(i.thread_id)) continue;
+    if (!advisoryByThread.has(i.thread_id)) advisoryByThread.set(i.thread_id, []);
+    advisoryByThread.get(i.thread_id).push(i);
+  }
+  const advisory = [...advisoryByThread.entries()]
+    .map(([threadId, issues]) => {
+      const t = S.getThread(db, threadId);
+      return t ? { threadId, name: t.title, issues } : null;
+    })
+    .filter(Boolean);
+
   let groups = [];
   if (unpinned.length) {
     const list = unpinned.map((i) => `#${i.number} ${i.title}`).join("\n");
@@ -173,6 +193,12 @@ export async function clusterIntoInitiatives(db, repo, { guidance } = {}) {
       ? `These initiatives already exist and are locked. Use the EXACT same name when an ` +
         `issue below clearly belongs to one; otherwise make new initiatives:\n` +
         locked.map((l) => `- ${l.name}: ${l.issues.map((i) => "#" + i.number).join(", ")}`).join("\n") +
+        `\n\n`
+      : "";
+    const advisoryBlock = advisory.length
+      ? `These initiatives already exist — PREFER reusing them: keep the same name when an ` +
+        `issue below fits one, and only regroup when it's clearly a better home:\n` +
+        advisory.map((a) => `- ${a.name}: ${a.issues.map((i) => "#" + i.number).join(", ")}`).join("\n") +
         `\n\n`
       : "";
     const guide = guidance ? `Grouping guidance from the user — follow it: ${guidance}\n\n` : "";
@@ -184,6 +210,7 @@ export async function clusterIntoInitiatives(db, repo, { guidance } = {}) {
       `per issue. Give each initiative a short, human name (not an issue title).\n\n` +
       guide +
       lockedBlock +
+      advisoryBlock +
       `Issues to group:\n${list}\n\n` +
       `Return ONLY a JSON array: [{"initiative":"<name>","issues":[<numbers>]}]`;
 

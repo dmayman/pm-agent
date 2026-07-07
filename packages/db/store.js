@@ -478,6 +478,21 @@ export function pinIssueToThread(db, repoId, number, threadId) {
   ).run(threadId, repoId, Number(number));
 }
 
+// A SOFT (unpinned) initiative link — the observer's bridge from an event's refs.issue to
+// the thread it created. Ensures the issue row exists first (title backfills on the next
+// sync), then attaches it WITHOUT pinning, so the next recluster can still re-home it. Never
+// overrides a manual pin (pinned = 1).
+export function linkIssueToThread(db, repoId, number, threadId) {
+  db.prepare("INSERT OR IGNORE INTO issue_titles (repo_id, number, title) VALUES (?, ?, ?)").run(
+    repoId,
+    Number(number),
+    `#${number}`
+  );
+  db.prepare(
+    "UPDATE issue_titles SET thread_id = ? WHERE repo_id = ? AND number = ? AND (pinned = 0 OR pinned IS NULL)"
+  ).run(threadId, repoId, Number(number));
+}
+
 // Release a pin so the next recluster is free to re-home the issue. Leaves current
 // membership in place until then.
 export function unpinIssue(db, repoId, number) {
