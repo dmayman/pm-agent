@@ -10,9 +10,10 @@ three idempotent steps (safe to re-run):
 
 1. **Ledger** — enables the observational timeline (`.claude/pm-ledger.md` marker) and
    backfills it from the repo's git history.
-2. **Issue grooming** — enables GitHub Issues, creates the `idea` → `ready` →
-   `status:in-progress` workflow labels, and adds a 💡 Idea issue template. Skipped cleanly
-   if `gh` isn't authenticated (the ledger still gets set up).
+2. **Issue grooming** — enables GitHub Issues, turns on auto-delete-branch-on-merge (so
+   merged PR branches don't pile up), creates the `idea` → `ready` → `status:in-progress`
+   workflow labels, and adds a 💡 Idea issue template. Skipped cleanly if `gh` isn't
+   authenticated (the ledger still gets set up).
 3. **Dashboard** — points to `pm-agent serve`.
 
 Pass the user's arguments through: `$ARGUMENTS`. In particular:
