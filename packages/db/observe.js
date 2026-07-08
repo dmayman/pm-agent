@@ -249,6 +249,42 @@ export function rollIntoUpdates(db, repo, newByThread) {
   return heads;
 }
 
+// One-time migration: cluster a repo's EXISTING events (logged before Update clustering existed,
+// so update_id IS NULL) into Updates, using the same session-gap rule. Leaves every cluster
+// UNSEALED (the caller synthesizes them, then seals all but each thread's head). Returns
+// { created: [updateId…] in creation order, heads: Set<updateId> } (heads = latest per thread).
+export function backfillUpdates(db, repo) {
+  const rows = db
+    .prepare(
+      `SELECT id, thread_id, ts FROM events
+        WHERE repo_id = ? AND thread_id IS NOT NULL AND update_id IS NULL
+        ORDER BY thread_id, ts ASC`
+    )
+    .all(repo.id);
+  const byThread = new Map();
+  for (const r of rows) {
+    if (!byThread.has(r.thread_id)) byThread.set(r.thread_id, []);
+    byThread.get(r.thread_id).push({ eventId: r.id, ts: r.ts });
+  }
+  const created = [];
+  const heads = new Set();
+  for (const [threadId, evs] of byThread) {
+    let head = null; // fresh clustering — ignore any existing head so history stays self-contained
+    for (const ev of evs) {
+      const gap = head ? new Date(ev.ts).getTime() - new Date(head.ts_end).getTime() : Infinity;
+      if (!head || gap > SESSION_GAP_MS) {
+        const id = S.createUpdate(db, repo.id, { threadId, tsStart: ev.ts, tsEnd: ev.ts });
+        head = { id, ts_end: ev.ts };
+        created.push(id);
+      }
+      S.addEventToUpdate(db, head.id, ev.eventId, ev.ts);
+      if (ev.ts > head.ts_end) head.ts_end = ev.ts;
+    }
+    if (head) heads.add(head.id);
+  }
+  return { created, heads };
+}
+
 const LIFECYCLE_THROTTLE_MS = 90 * 1000; // at most once every ~90s per repo
 
 // Run the deterministic lifecycle refresh if enough time has passed since the last one.

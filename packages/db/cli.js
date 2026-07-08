@@ -597,12 +597,26 @@ async function cmdReclassify(argv) {
     guidance: typeof flags.guidance === "string" ? flags.guidance : undefined,
   });
   process.stdout.write(dim(`  ${rc.areas} areas, ${rc.moved} threads placed\n`));
+
+  // Cluster the repo's pre-existing (un-clustered) events into Updates — the timeline's unit.
+  // New events cluster automatically in the observer; this one-time pass catches all history.
+  const { backfillUpdates } = await import("./observe.js");
+  const { created, heads } = backfillUpdates(db, repo);
+  if (created.length) process.stdout.write(dim(`  ${created.length} updates backfilled from history\n`));
+
   if (!flags["no-synth"]) {
-    const { synthesizeAll } = await import("./synthesize.js");
+    const { synthesizeUpdatesBatch, synthesizeAll } = await import("./synthesize.js");
+    // Caption every backfilled update while it's still unsealed, then freeze all but each
+    // thread's head (history is done; only the current head keeps re-synthesizing).
+    if (created.length) {
+      const u = await synthesizeUpdatesBatch(db, repo, created);
+      for (const id of created) if (!heads.has(id)) S.sealUpdate(db, id);
+      process.stdout.write(dim(`  ${u} updates captioned\n`));
+    }
     const n = await synthesizeAll(db, repo, { staleOnly: false });
     process.stdout.write(dim(`  ${n} summaries re-synthesized\n`));
   }
-  if (flags.json) return print(rc);
+  if (flags.json) return print({ ...rc, updates: created.length });
 }
 
 async function cmdDisable() {
