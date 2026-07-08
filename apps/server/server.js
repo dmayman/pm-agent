@@ -6,7 +6,7 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import * as S from "../../packages/db/store.js";
@@ -90,6 +90,33 @@ function livePreview() {
     /* no preview running — the common case */
   }
   return null;
+}
+
+// Is the rendezvous'd preview's HTTP server actually answering yet? The rendezvous file appears
+// as soon as `preview` spawns the child (pid alive), well before that child's server has bound
+// its port — so the Primary/Preview panel's "launching…" spinner needs this, not just the pid
+// check livePreview() already does for the env-switch banner.
+function pingPreview(port, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: "127.0.0.1", port, path: "/api/meta", timeout: timeoutMs }, (res) => {
+      res.resume();
+      resolve(res.statusCode >= 200 && res.statusCode < 500);
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.on("error", () => resolve(false));
+  });
+}
+
+// The Primary/Preview panel polls this (not previewInfo(), which only proves the pid is alive) to
+// know when to upgrade its spinner to a live link.
+async function previewState() {
+  const lp = livePreview();
+  if (!lp) return { running: false };
+  const ready = await pingPreview(lp.port);
+  return { running: true, ready, branch: lp.branch, url: lp.url, port: lp.port };
 }
 
 function sendJson(res, status, obj) {
@@ -274,6 +301,29 @@ async function writeApi(db, repo, url, body, serverPort) {
         PM_AGENT_PREVIEW: "",
         PM_AGENT_PREVIEW_BRANCH: "",
       },
+    });
+    child.unref();
+    return { ok: true, branch: target };
+  }
+
+  // Launch (or re-point) the preview from the PRIMARY dashboard — the gap /api/preview/switch
+  // doesn't cover, since that one only works when called *on* an already-running preview. `preview`
+  // is idempotent (it tears down any prior preview itself), so the same command covers both "spawn
+  // a fresh one" and "re-point the running one": reuse its port if it's already up, else the
+  // command's own default.
+  if (p === "/api/preview/launch") {
+    const target = String(b.branch || "").trim();
+    if (!target) return { __status: 400, error: "branch required" };
+    const cli = path.join(repo.root, "bin", "pm-agent.js");
+    if (!existsSync(cli)) return { __status: 400, error: "not a pm-agent checkout" };
+    const lp = livePreview();
+    const args = [cli, "preview", target];
+    if (lp && lp.port) args.push("--port", String(lp.port));
+    const child = spawn(process.execPath, args, {
+      cwd: repo.root,
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env },
     });
     child.unref();
     return { ok: true, branch: target };
@@ -522,6 +572,11 @@ export function serve({ port = 4477, cwd = process.cwd() } = {}) {
       if (url.pathname.startsWith("/api/")) {
         if (url.pathname === "/api/stream" && req.method === "GET") {
           return openStream(req, res, sseClients, lastVersion);
+        }
+        // Not repo-scoped (the preview rendezvous is global to this machine, not per-project) and
+        // async (the readiness probe is a real network call), so it's handled outside api()/writeApi().
+        if (url.pathname === "/api/preview/state" && req.method === "GET") {
+          return sendJson(res, 200, await previewState());
         }
         const scoped = scopeRepo(db, repo, url);
         if (req.method === "POST") {
