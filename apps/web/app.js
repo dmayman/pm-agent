@@ -60,6 +60,7 @@ const ICON_PATHS = {
   externalLink: '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>',
   arrowUp: '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>',
   arrowDown: '<line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/>',
+  refresh: '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
 };
 function icon(name, cls){
   return `<svg class="icon${cls ? " " + cls : ""}" viewBox="0 0 24 24" fill="none" stroke="currentColor" `
@@ -123,6 +124,18 @@ async function apiPost(path, body){
 
 function pad2(n){ return n < 10 ? "0" + n : "" + n; }
 function fmtTime(d){ return pad2(d.getHours()) + ":" + pad2(d.getMinutes()); }
+
+// Coarse "how long ago" for the preview's last-synced label — minute/hour/day buckets are plenty
+// here; the exact timestamp rides along in a title on hover.
+function syncAgo(iso){
+  const t = Date.parse(iso);
+  if(!t) return "";
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if(s < 60) return "just now";
+  const m = Math.floor(s / 60); if(m < 60) return m + "m ago";
+  const h = Math.floor(m / 60); if(h < 24) return h + "h ago";
+  return Math.floor(h / 24) + "d ago";
+}
 
 // compact token + cost formatting for the Cost view
 function fmtTokens(n){
@@ -215,7 +228,7 @@ const state = {
   wt: {
     openMenu:null, editCmd:null, error:null, mergedOpen:false, busy:new Set(),
     // the ONE preview slot, for repos opted into the restricted Primary/Preview layout (below).
-    preview: { branch:null, status:"idle", url:null, error:null, pollTimer:null, hydrated:false },
+    preview: { branch:null, status:"idle", url:null, error:null, pollTimer:null, hydrated:false, lastSyncedAt:null },
   },
   wtData: null,            // last /api/worktrees payload (for no-network repaints)
   wtSig: "",               // last-rendered panel signature
@@ -1039,6 +1052,27 @@ function previewStatusHtml(){
   return "";
 }
 
+// The preview's manual DB-sync control: the scratch DB is seeded once and then kept, so this line
+// says when prod was last copied in ("Never synced" if --fresh) and offers a Resync button that
+// re-copies it on demand. Only shown once the preview is actually up — there's nothing to resync
+// while it's still launching or errored.
+function previewSyncHtml(){
+  const p = state.wt.preview;
+  if(p.status !== "ready") return "";
+  const busy = state.wt.busy.has("pv-reseed");
+  const label = p.lastSyncedAt ? "Last synced " + syncAgo(p.lastSyncedAt) : "Never synced";
+  const title = p.lastSyncedAt
+    ? "prod ledger last copied in " + new Date(p.lastSyncedAt).toLocaleString()
+    : "the scratch DB has not been synced from prod";
+  return `<div class="wtp-sync">`
+    + `<span class="wtp-sync-lbl" title="${esc(title)}">${esc(label)}</span>`
+    + `<button class="wtp-sync-btn"${busy ? " disabled" : ""} data-act="pv-reseed" `
+    + `title="Re-copy the production ledger into this preview">`
+    + `${busy ? `<span class="wtp-spin"></span>` : icon("refresh")}`
+    + `<span>${busy ? "syncing…" : "Resync"}</span></button>`
+    + `</div>`;
+}
+
 // Primary's services, read-only: a status dot, name, and port — no open-link, no start/stop.
 // Unlike every other row in this panel, Primary's declared services can include the dashboard's
 // own process (pm-agent's "Observer"), and there's no sensible interactive control for that:
@@ -1084,7 +1118,8 @@ function wtpBranchRowSlotted(b, worktrees, baseName){
     h += `<div class="wtp-brow-run">${primaryServicesHtml(primaryWt)}</div>`;
   }else if(holdsPreview){
     const status = previewStatusHtml();
-    if(status) h += `<div class="wtp-brow-run">${status}</div>`;
+    const sync = previewSyncHtml();
+    if(status || sync) h += `<div class="wtp-brow-run">${status}${sync}</div>`;
   }
   if(menuOpen) h += wtpSlotMenu(b.name, baseName);
   return h + `</div>`;
@@ -1241,6 +1276,7 @@ async function hydratePreviewState(){
   p.branch = st.branch || null;
   p.status = st.ready ? "ready" : "launching";
   p.url = st.ready ? st.url : null;
+  if("lastSyncedAt" in st) p.lastSyncedAt = st.lastSyncedAt;
   repaintPanel();
   if(!st.ready && p.branch) pollPreviewState(p.branch);
 }
@@ -1257,6 +1293,7 @@ function pollPreviewState(branch, attempt = 0){
     if(state.wt.preview.branch !== branch) return; // superseded by a newer selection
     if(st && st.running && st.branch === branch && st.ready){
       p.status = "ready"; p.url = st.url; p.pollTimer = null;
+      if("lastSyncedAt" in st) p.lastSyncedAt = st.lastSyncedAt;
       return repaintPanel();
     }
     if(attempt >= 60){
@@ -1404,6 +1441,28 @@ async function handleWtAction(el){
     // launch it right away (same trigger behavior as before the picker-based redesign).
     w.openMenu = null;
     return handlePreviewSelect(branch);
+  }
+  if(act === "pv-reseed"){
+    // Resync the running preview's scratch DB from prod. The server reseeds by relaunching the
+    // preview on its own branch/port, so it drops back to "launching" briefly; poll until it's up
+    // again, at which point the fresh lastSyncedAt lands via preview state.
+    const p = state.wt.preview;
+    w.busy.add("pv-reseed"); repaintPanel();
+    const r = await apiPost("/api/preview/reseed", {});
+    w.busy.delete("pv-reseed");
+    if(r && r.ok === false){
+      p.status = "error"; p.error = r.error || "couldn't resync preview";
+      return repaintPanel();
+    }
+    if(p.branch){
+      if(p.pollTimer){ clearTimeout(p.pollTimer); p.pollTimer = null; }
+      p.status = "launching"; p.url = null; p.error = null;
+      repaintPanel();
+      pollPreviewState(p.branch);
+    } else {
+      repaintPanel();
+    }
+    return;
   }
 }
 
