@@ -1010,10 +1010,11 @@ function wtpSlotPill(b, baseName, menuOpen){
   }
   const p = state.wt.preview;
   if(p.branch === b.name){
-    const ready = p.status === "ready";
     const starting = p.status === "launching";
-    return `<span class="wtp-pill static${ready ? " live" : ""}${starting ? " starting" : ""}" title="preview slot">`
-      + `<span class="wtp-pill-dot${ready ? " live" : ""}"></span><span class="wtp-pill-txt">Preview</span></span>`;
+    // Always amber, matching the preview environment's own banner — never the green "live" a real
+    // dev-server gets, so this pill reads as "opens a scratch preview" at a glance, not "live infra".
+    return `<span class="wtp-pill static preview${starting ? " starting" : ""}" title="preview slot">`
+      + `<span class="wtp-pill-dot preview"></span><span class="wtp-pill-txt">Preview</span></span>`;
   }
   return wtGhostBtn(b.name, menuOpen);
 }
@@ -1029,8 +1030,8 @@ function previewStatusHtml(){
       + `<span class="wtp-starting">launching preview…</span></div>`;
   }
   if(p.status === "ready" && p.url){
-    return `<div class="wtp-run live"><a class="wtp-open" href="${esc(p.url)}" target="_blank" rel="noopener">`
-      + `<span class="wtp-dot"></span>open preview<span class="arw">${icon("externalLink")}</span></a></div>`;
+    return `<div class="wtp-run preview"><a class="wtp-open preview" href="${esc(p.url)}" target="_blank" rel="noopener">`
+      + `<span class="wtp-dot preview"></span>open preview<span class="arw preview">${icon("externalLink")}</span></a></div>`;
   }
   if(p.status === "error"){
     return `<div class="wtp-err"><span class="wtp-err-msg">${esc(p.error || "couldn't launch preview")}</span></div>`;
