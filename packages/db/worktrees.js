@@ -318,10 +318,15 @@ export function worktreeReport(repo, { skipPid, skipPort, devCommand, excludePat
   // port→pid map declared services use for liveness.
   const sockets = listeningSockets();
   const serverScanned = attachServers(worktrees, sockets, { skipPid, skipPort });
+  // Unlike attachServers above, this does NOT skip the dashboard's own pid/port. skipPid/skipPort
+  // exist so the dashboard's own listener isn't mistakenly auto-discovered as some worktree's
+  // phantom dev server — but a declared service is an explicit assertion ("this port is what I
+  // run"), and a repo can legitimately declare its own dashboard process as one (e.g. pm-agent
+  // declaring "Operator UI" on its own serve port). Skipping here would make that service permanently
+  // unable to report live, even while it's the process serving this very request.
   const listeningByPort = new Map();
   if (sockets) {
     for (const s of sockets) {
-      if (s.pid === skipPid || s.port === skipPort) continue;
       if (!listeningByPort.has(s.port)) listeningByPort.set(s.port, s.pid);
     }
   }

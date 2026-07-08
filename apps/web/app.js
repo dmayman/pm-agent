@@ -908,9 +908,10 @@ function servicesControl(wt, runOpen){
   if(wt.servicesDeclared){
     const rows = wt.services.map((s) => serviceRow(wt, s)).join("");
     const anyUp = wt.services.some((s) => s.state === "live" || s.state === "starting");
+    const allUp = wt.services.every((s) => s.state === "live" || s.state === "starting");
     const busyAll = state.wt.busy.has("svcall:" + wt.path);
-    let foot = `<div class="wtp-svc-foot">`
-      + `<button class="wtp-btn wtp-svc-all run" data-act="svc-start-all" data-wt="${esc(wt.path)}" ${busyAll ? "disabled" : ""}>${icon("play")}<span>Start all</span></button>`;
+    let foot = `<div class="wtp-svc-foot">`;
+    if(!allUp) foot += `<button class="wtp-btn wtp-svc-all run" data-act="svc-start-all" data-wt="${esc(wt.path)}" ${busyAll ? "disabled" : ""}>${icon("play")}<span>Start all</span></button>`;
     if(anyUp) foot += `<button class="wtp-btn stop wtp-svc-all" data-act="svc-stop-all" data-wt="${esc(wt.path)}" ${busyAll ? "disabled" : ""}>Stop all</button>`;
     foot += `</div>`;
     return `<div class="wtp-svcs">${rows}${foot}</div>`;
