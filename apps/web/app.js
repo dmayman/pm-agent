@@ -1530,12 +1530,12 @@ function renderEnvSwitch(preview){
   let isPrev, current, other;
   if(preview && preview.self){
     isPrev = true;
-    current = { label:"Preview", sub: preview.branch || "" };
-    other = preview.parentUrl ? { label:"Production", sub:"", url: preview.parentUrl } : null;
+    current = { label:"Preview", sub: preview.branch || "", kind:"preview" };
+    other = preview.parentUrl ? { label:"Production", sub:"", url: preview.parentUrl, kind:"prod" } : null;
   }else if(preview && !preview.self && preview.link){
     isPrev = false;
-    current = { label:"Production", sub:"" };
-    other = { label:"Preview", sub: preview.link.branch || "", url: preview.link.url };
+    current = { label:"Production", sub:"", kind:"prod" };
+    other = { label:"Preview", sub: preview.link.branch || "", url: preview.link.url, kind:"preview" };
   }else{
     document.body.classList.remove("has-envswitch");
     if(el) el.remove();
@@ -1544,13 +1544,16 @@ function renderEnvSwitch(preview){
   if(!el){ el = document.createElement("div"); el.id = "envSwitch"; document.body.appendChild(el); }
   el.className = isPrev ? "env-preview" : "env-prod";
   document.body.classList.toggle("has-envswitch", !isPrev);
+  // Dot/check color always reflects the option's OWN environment (prod=green, preview=amber),
+  // never whether it happens to be the current or the other one — otherwise the two swap colors
+  // depending on which side you're viewing from, which reads as arbitrary rather than meaningful.
   const opt = (o, cur) => o
     ? `<a class="env-opt${cur?" is-current":""}" ${cur?"":`href="${esc(o.url)}"`}>`
-      + `<span class="env-dot${cur?"":" alt"}"></span><span class="env-opt-txt">${esc(o.label)}`
-      + `${o.sub?` <span class="env-sub">${esc(o.sub)}</span>`:""}</span>${cur?`<span class="env-check">✓</span>`:""}</a>`
+      + `<span class="env-dot ${o.kind}"></span><span class="env-opt-txt">${esc(o.label)}`
+      + `${o.sub?` <span class="env-sub">${esc(o.sub)}</span>`:""}</span>${cur?`<span class="env-check ${o.kind}">✓</span>`:""}</a>`
     : `<div class="env-opt disabled">No preview running</div>`;
   el.innerHTML = `<button class="env-btn" data-act="envtoggle" aria-haspopup="true">`
-    + `<span class="env-dot"></span><span class="env-cur">${esc(current.label)}`
+    + `<span class="env-dot ${current.kind}"></span><span class="env-cur">${esc(current.label)}`
     + `${current.sub?` <span class="env-sub">${esc(current.sub)}</span>`:""}</span><span class="env-caret">▾</span></button>`
     + `<div class="env-menu" id="envMenu" hidden>`
     +   opt({ ...current }, true)
@@ -1603,7 +1606,7 @@ async function fillPvBranchMenu(menu){
     return `<button class="pv-menu-opt${isCur?" is-current":""}" data-act="pvswitch" data-branch="${esc(b.name)}"${isCur?" disabled":""}>`
       + `<span class="pv-dot${isCur?"":" alt"}"></span><span class="pv-menu-name">${esc(b.name)}</span>`
       + (b.isDefault?`<span class="pv-menu-tag">default</span>`:"")
-      + (isCur?`<span class="env-check">✓</span>`:"")
+      + (isCur?`<span class="env-check preview">✓</span>`:"")
       + `</button>`;
   }).join("") || `<div class="pv-menu-msg">no branches</div>`;
 }
