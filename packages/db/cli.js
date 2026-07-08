@@ -192,8 +192,16 @@ function parseIssueList(v) {
 // Manual initiative control — what Claude drives mid-session ("group #43 and #49 into an
 // initiative about X"). An initiative IS a thread; these subcommands additionally PIN the
 // named issues so the auto-clusterer won't move them on the next recluster.
+//
+// Two shapes:
+//   initiative <new|add|remove|list> …   — the pin/list subcommands (below)
+//   initiative "<name>" [--area …] …     — the idempotent upsert / why-seeding entry point
+// The bare-name form is the one the agent uses to seed an arc's why+goal at its birth.
+const INITIATIVE_SUBS = new Set(["new", "add", "remove", "list"]);
 function cmdInitiative(argv) {
-  const [sub, ...rest] = argv;
+  const sub = argv[0];
+  if (sub !== undefined && !INITIATIVE_SUBS.has(sub)) return cmdInitiativeUpsert(argv);
+  const rest = argv.slice(1);
   const { _, flags } = parseArgs(rest);
   const db = S.openDb();
   const repo = requireRepo(db);
@@ -237,6 +245,94 @@ function cmdInitiative(argv) {
       }
     }
   } else fail(`unknown initiative subcommand: ${sub}`);
+}
+
+// The idempotent upsert / why-seeding entry point: `initiative "<name>" [--area "<area>"]
+// [--why "..."] [--goal "..."] [--lifecycle planned|active|closed] [--issues 43,49]`. Creates
+// or updates the named initiative under the named area (creating the area if missing), pins its
+// placement so the librarian won't move it, seeds why (source='agent', high-trust) + goal (the
+// evergreen description), and pins any issues. Safe to re-run — reuses threads by title.
+function cmdInitiativeUpsert(argv) {
+  const { _, flags } = parseArgs(argv);
+  const db = S.openDb();
+  const repo = requireRepo(db);
+  const name = _.join(" ").trim();
+  if (!name) {
+    fail('pm-agent initiative: need a name, e.g. initiative "auth hardening" --area "Security" --why "…"');
+  }
+
+  const existing = S.findThreadByTitle(db, repo.id, name);
+  const id = existing ? existing.id : S.createThread(db, repo.id, { title: name });
+
+  // Area: resolve/create it (as an area) so we can parent the initiative under it.
+  let areaId;
+  if (typeof flags.area === "string" && flags.area.trim()) {
+    const areaName = flags.area.trim();
+    const ea = S.findThreadByTitle(db, repo.id, areaName);
+    areaId = ea ? ea.id : S.createThread(db, repo.id, { title: areaName });
+    S.setThreadPlacement(db, areaId, { kind: "area", parentId: null, pinned: true });
+  }
+
+  // Pin the placement (kind=initiative, and its parent area if given) so the librarian's
+  // consolidation pass never re-homes an agent-set initiative.
+  const placement = { kind: "initiative", pinned: true };
+  if (areaId !== undefined) placement.parentId = areaId;
+  S.setThreadPlacement(db, id, placement);
+
+  // why → the motivation (agent-seeded, high trust); goal → the evergreen description.
+  const narrative = { source: "agent" };
+  if (typeof flags.why === "string") narrative.why = flags.why;
+  if (typeof flags.goal === "string") narrative.description = flags.goal;
+  if ("why" in narrative || "description" in narrative) S.setThreadNarrative(db, id, narrative);
+
+  // lifecycle: honor --lifecycle when valid; otherwise default a freshly-created one to 'active'.
+  const LC = new Set(["planned", "active", "closed"]);
+  if (typeof flags.lifecycle === "string" && LC.has(flags.lifecycle)) {
+    S.setThreadLifecycle(db, id, flags.lifecycle);
+  } else if (!existing) {
+    S.setThreadLifecycle(db, id, "active");
+  }
+
+  const issues = parseIssueList(flags.issues);
+  for (const n of issues) S.pinIssueToThread(db, repo.id, n, id);
+
+  if (flags.json) return print({ id, name, area: areaId ?? null, issues });
+  process.stdout.write(
+    dim(
+      `initiative #${id} "${name}"${areaId ? ` in area #${areaId}` : ""}${issues.length ? ` · pinned ${issues.length} issue(s)` : ""}\n`
+    )
+  );
+}
+
+// Areas — the evergreen buckets initiatives live under. `area "<name>" [--description "..."]`
+// upserts one (idempotent, pinned so the librarian won't reclassify it); `area` / `area list`
+// shows the areas and their initiatives.
+function cmdArea(argv) {
+  const sub = argv[0];
+  const db = S.openDb();
+  const repo = requireRepo(db);
+  if (sub === undefined || sub === "list") {
+    const { flags } = parseArgs(sub === "list" ? argv.slice(1) : argv);
+    const areas = S.listAreas(db, repo.id);
+    if (flags.json) return print(areas);
+    if (!areas.length) return void process.stdout.write(dim("No areas yet.\n"));
+    for (const a of areas) {
+      process.stdout.write(`${bold("#" + a.id)} ${a.title}${a.description ? dim(" — " + a.description) : ""}\n`);
+      for (const i of a.initiatives) {
+        process.stdout.write(dim(`    #${i.id} ${i.title} [${i.lifecycle || "active"}]\n`));
+      }
+    }
+    return;
+  }
+  const { _, flags } = parseArgs(argv);
+  const name = _.join(" ").trim();
+  if (!name) fail('pm-agent area: need a name, e.g. area "Dashboard UI" --description "…"');
+  const existing = S.findThreadByTitle(db, repo.id, name);
+  const id = existing ? existing.id : S.createThread(db, repo.id, { title: name });
+  S.setThreadPlacement(db, id, { kind: "area", parentId: null, pinned: true });
+  if (typeof flags.description === "string") S.setThreadNarrative(db, id, { description: flags.description });
+  if (flags.json) return print({ id, name });
+  process.stdout.write(dim(`area #${id} "${name}"\n`));
 }
 
 function groupByDay(events) {
@@ -384,6 +480,12 @@ function cmdContext() {
   lines.push(
     "Threads are also called initiatives — the higher-level buckets issues group into. When the user asks to (re)group issues (e.g. \"#43 and #49 should be an initiative about auth\"), act on it: create or extend the initiative and pin those issues with `pm-agent initiative new \"<name>\" --issues 43,49` or `pm-agent initiative add \"<name-or-id>\" --issues 12`. Pinned issues are locked — the automatic clusterer will never move them — so this is durable, not a one-off. Then be proactive: look over the other known issues, and if any clearly belong to that same initiative, add them too and tell the user which ones you pinned and why (undo with `pm-agent initiative remove --issues N`). Use `pm-agent initiative list --json` to see current groupings."
   );
+  lines.push(
+    "The ledger has two levels: an Area is an evergreen domain of work that's never \"done\" (e.g. \"Dashboard UI\", \"Observer & capture\"); an Initiative is a bounded arc of work that lives inside one area and eventually finishes (lifecycle: planned → active → closed). An Initiative is anything with a goal that spans more than a throwaway task. One-off, small, disjoint, just-complete-it tasks do NOT get an initiative — let those flow into the timeline as plain events. Only meaningful arcs earn one."
+  );
+  lines.push(
+    "At the BIRTH of an arc — the moment the user frames a goal, an issue is opened for it, or a branch is cut — silently seed the initiative's why + goal so its story is grounded from the start: `pm-agent initiative \"<name>\" --area \"<area>\" --why \"<motivation/impact>\" --goal \"<what it aims to do>\"` (idempotent; add `--lifecycle planned|active|closed` or `--issues N,N`). Create the area first if it doesn't exist with `pm-agent area \"<name>\" --description \"...\"`. Do this silently — never announce it, never ask permission, never let it sit in the critical path of what the user asked for."
+  );
   if (mode === "explicit") {
     lines.push(
       "Capture mode = explicit: when something worth remembering happens — a decision, a build/test/review milestone, a followup, or a deferred loose end — record it with `pm-agent log --type <decided|built|tested|reviewed|followup|deferred|merged|blocked|note> [--thread \"<title or id>\"] [--issue N] [--commit SHA] \"<one line>\"`. Judgement over volume: log what your future self would want on the timeline, not every action."
@@ -442,6 +544,10 @@ async function cmdEnable(argv) {
     process.stdout.write(dim(`  backfilled ${res.commits} commits (gh unavailable — no issue lifecycle)\n`));
   }
   if (!flags["no-synth"]) {
+    process.stdout.write(dim(`  · sorting into areas + initiatives (Haiku)…\n`));
+    const { reclassifyThreads } = await import("./work.js");
+    const rc = await reclassifyThreads(db, repo, {});
+    process.stdout.write(dim(`  ${rc.areas} areas, ${rc.moved} threads placed\n`));
     process.stdout.write(dim(`  · synthesizing summaries (Haiku)…\n`));
     const { synthesizeAll } = await import("./synthesize.js");
     const n = await synthesizeAll(db, repo, { staleOnly: true });
@@ -468,9 +574,35 @@ async function cmdRecluster(argv) {
   const { runFullIngest } = await import("./ingest.js");
   const res = await runFullIngest(db, repo, {});
   process.stdout.write(dim(`  ${res.initiatives} initiatives, ${res.branches} unfinished branches\n`));
+  // Sort the (re)grouped threads into areas + initiatives, set lifecycle, seed inferred whys.
+  const { reclassifyThreads } = await import("./work.js");
+  const rc = await reclassifyThreads(db, repo, {});
+  process.stdout.write(dim(`  sorted into ${rc.areas} areas (${rc.moved} threads placed)\n`));
   const { synthesizeAll } = await import("./synthesize.js");
   const n = await synthesizeAll(db, repo, { staleOnly: false });
   process.stdout.write(dim(`  ${n} thread summaries re-synthesized\n`));
+}
+
+// The librarian migration on demand: sort existing threads into areas vs initiatives, parent
+// each initiative to an area, set lifecycle deterministically, and seed inferred whys — all
+// while respecting hand/agent pins. Idempotent. Re-synthesizes summaries afterward unless
+// --no-synth. --guidance steers the area grouping.
+async function cmdReclassify(argv) {
+  const { flags } = parseArgs(argv);
+  const db = S.openDb();
+  const repo = requireRepo(db);
+  process.stdout.write(dim("sorting threads into areas + initiatives (Haiku)…\n"));
+  const { reclassifyThreads } = await import("./work.js");
+  const rc = await reclassifyThreads(db, repo, {
+    guidance: typeof flags.guidance === "string" ? flags.guidance : undefined,
+  });
+  process.stdout.write(dim(`  ${rc.areas} areas, ${rc.moved} threads placed\n`));
+  if (!flags["no-synth"]) {
+    const { synthesizeAll } = await import("./synthesize.js");
+    const n = await synthesizeAll(db, repo, { staleOnly: false });
+    process.stdout.write(dim(`  ${n} summaries re-synthesized\n`));
+  }
+  if (flags.json) return print(rc);
 }
 
 async function cmdDisable() {
@@ -557,7 +689,10 @@ const LEDGER_HELP = `
 LEDGER COMMANDS
   log <summary...>       Record an event (--type, --thread, --issue, --commit, --branch, --pr)
   thread [list|new|set]  Inspect or manage threads (--status, --genesis, --title)
-  initiative <sub>       Group issues into initiatives by hand (new|add|remove|list; --issues 43,49)
+  area "<name>"          Upsert an evergreen area (--description); area/area list to show them
+  initiative "<name>"    Upsert an initiative (--area, --why, --goal, --lifecycle, --issues)
+  initiative <sub>       Pin issues by hand (new|add|remove|list; --issues 43,49)
+  reclassify             Sort threads into areas + initiatives (Haiku; respects pins)
   timeline               The activity timeline (--days N, --since ISO, --thread REF, --json)
   inflight               Active threads + their recent events + loose ends (--json)
   loose [resolve <id>]   Open loose ends (--json)
@@ -574,6 +709,10 @@ export async function runLedger(cmd, argv) {
       return cmdThread(argv);
     case "initiative":
       return cmdInitiative(argv);
+    case "area":
+      return cmdArea(argv);
+    case "reclassify":
+      return cmdReclassify(argv);
     case "timeline":
       return cmdTimeline(argv);
     case "inflight":

@@ -168,10 +168,12 @@ export async function observeWorker(jobFile) {
   const events = extractJsonArray(output);
   if (repo) {
     const touched = new Set();
+    // The new events we just logged, grouped by thread — what gets rolled into Update clusters.
+    const newByThread = new Map();
     for (const e of events) {
       if (!e || !e.type || !e.summary) continue;
       const threadId = e.thread ? S.resolveThread(db, repo.id, String(e.thread)) : null;
-      S.logEvent(db, repo.id, {
+      const eventId = S.logEvent(db, repo.id, {
         threadId,
         type: S.normalizeType(e.type),
         summary: String(e.summary),
@@ -180,6 +182,13 @@ export async function observeWorker(jobFile) {
       });
       if (threadId) {
         touched.add(threadId);
+        // logEvent stamps ts = now() when we don't pass one; read it back so the update window
+        // is exact rather than approximated.
+        const row = db.prepare("SELECT ts FROM events WHERE id = ?").get(eventId);
+        if (row) {
+          if (!newByThread.has(threadId)) newByThread.set(threadId, []);
+          newByThread.get(threadId).push({ eventId, ts: row.ts });
+        }
         // Bridge issue→initiative membership: the event names its thread AND a GitHub issue,
         // but membership lives in issue_titles.thread_id, which logEvent doesn't touch. Attach
         // it as a SOFT link so the initiative shows the issue (and the recluster can re-home).
@@ -190,19 +199,54 @@ export async function observeWorker(jobFile) {
       }
     }
 
+    // Roll the new events into each touched thread's head Update (opening a fresh head when the
+    // session gap since the last one is too large). Returns the head update ids to synthesize.
+    const headUpdates = rollIntoUpdates(db, repo, newByThread);
+
     // Bridge the git/GitHub side: a turn may have closed an issue, merged a PR, or pushed a
     // branch (e.g. `gh issue close 13`). The observer distills the narrative event, but issue
     // *status* only moves when we re-derive lifecycle. Do it here, throttled, so done/shipped
     // reclassify silently within a turn or two of the change — no manual `ingest` needed.
     for (const id of await maybeRefreshLifecycle(db, repo)) touched.add(id);
 
-    // Re-synthesize every thread we touched (new event) or whose issue status just flipped.
-    if (touched.size) {
-      const { synthesizeThread } = await import("./synthesize.js");
+    // Re-synthesize every thread we touched (new event) or whose issue status just flipped, plus
+    // the head Update summaries for the threads that got new events.
+    if (touched.size || headUpdates.size) {
+      const { synthesizeThread, synthesizeUpdate } = await import("./synthesize.js");
       for (const id of touched) synthesizeThread(db, repo, id);
+      for (const updateId of headUpdates.values()) synthesizeUpdate(db, repo, updateId);
     }
   }
   cleanup(jobFile);
+}
+
+// A session's worth of quiet: if the newest event's gap since the head update's end exceeds
+// this, we seal the old head and open a new one, so an Update stays one coherent burst of work
+// rather than sprawling across days.
+const SESSION_GAP_MS = 3 * 60 * 60 * 1000;
+
+// Cluster freshly-logged events into per-thread Updates. For each thread: roll each new event
+// into its open (unsealed) head update; when there's no head, or the gap since the head's end
+// exceeds a session, seal the old head and open a new one. Returns a Map<threadId, headUpdateId>
+// of the heads that ended up with new events (the ones whose summaries need (re)synthesis).
+export function rollIntoUpdates(db, repo, newByThread) {
+  const heads = new Map();
+  for (const [threadId, evs] of newByThread) {
+    evs.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0)); // chronological
+    let head = S.getHeadUpdate(db, threadId); // {id, ts_end, ...} | null
+    for (const ev of evs) {
+      const gap = head ? new Date(ev.ts).getTime() - new Date(head.ts_end).getTime() : Infinity;
+      if (!head || gap > SESSION_GAP_MS) {
+        if (head) S.sealUpdate(db, head.id);
+        const id = S.createUpdate(db, repo.id, { threadId, tsStart: ev.ts, tsEnd: ev.ts });
+        head = { id, ts_end: ev.ts };
+      }
+      S.addEventToUpdate(db, head.id, ev.eventId, ev.ts);
+      if (ev.ts > head.ts_end) head.ts_end = ev.ts;
+    }
+    if (head) heads.set(threadId, head.id);
+  }
+  return heads;
 }
 
 const LIFECYCLE_THROTTLE_MS = 90 * 1000; // at most once every ~90s per repo

@@ -518,6 +518,39 @@ export function listUpdates(db, threadId) {
     .all(threadId);
 }
 
+export function getUpdate(db, id) {
+  return db.prepare("SELECT * FROM updates WHERE id = ?").get(id) || null;
+}
+
+// Events rolled into one update, chronological — the expandable detail behind its summary.
+export function eventsForUpdate(db, updateId) {
+  return db
+    .prepare("SELECT * FROM events WHERE update_id = ? ORDER BY ts ASC")
+    .all(updateId);
+}
+
+// Every update across a repo (the Timeline stream), newest ts_end first, each carrying its
+// thread's title/kind and — for an initiative — its parent area's id/title for the chip.
+export function listUpdatesForRepo(db, repoId, { limit = 500 } = {}) {
+  return db
+    .prepare(
+      `SELECT u.*,
+              t.title  AS thread_title,
+              t.kind   AS thread_kind,
+              t.lifecycle AS lifecycle,
+              COALESCE(a.id, t.id)       AS area_id,
+              COALESCE(a.title, CASE WHEN t.kind = 'area' THEN t.title END) AS area_title,
+              (SELECT COUNT(*) FROM events e WHERE e.update_id = u.id) AS event_count
+         FROM updates u
+         JOIN threads t ON t.id = u.thread_id
+         LEFT JOIN threads a ON a.id = t.parent_id
+        WHERE u.repo_id = ?
+        ORDER BY u.ts_end DESC
+        LIMIT ?`
+    )
+    .all(repoId, limit);
+}
+
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------

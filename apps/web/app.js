@@ -37,7 +37,15 @@ const LIFECYCLE = {
 };
 const lifeMeta = (s) => LIFECYCLE[s] || { label:s || "—", short:s || "—", pc:"var(--ink-mute)" };
 const isUnfinished = (s) => s === "in_progress" || s === "shipped";
-const emptyWork = { total:0, done:0, shipped:0, todo:0, inProgress:0, unfinished:[] };
+
+// initiative lifecycle (the new model): planned -> active -> closed. Distinct from the per-issue
+// LIFECYCLE above; drives the pill on Update cards, area/initiative rows, and the initiative header.
+const INIT_LIFECYCLE = {
+  planned: { label:"planned", pc:"var(--t-deferred)" },
+  active:  { label:"active",  pc:"var(--t-built)"    },
+  closed:  { label:"closed",  pc:"var(--t-merged)"   },
+};
+const initLifeMeta = (s) => INIT_LIFECYCLE[s] || { label:s || "—", pc:"var(--ink-mute)" };
 
 // ---- tiny helpers -----------------------------------------------------------
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -198,20 +206,16 @@ function nodeClass(t){
 
 // ---- app state --------------------------------------------------------------
 const state = {
-  view: "work",
-  workMode: "days",        // days | threads | events
-  filter: "all",           // all | unfinished
-  threadId: null,
+  view: "timeline",        // timeline | areas | initiative | area | usage
+  paramId: null,           // :id for the initiative/area drill-in views
   meta: null,
   project: null,           // slug of the repo currently being viewed
   projects: [],            // all repos in the ledger (for the switcher)
   menuOpen: false,         // project switcher dropdown state
   seenEvents: new Set(),   // event ids we've already rendered (for new-flash)
-  expanded: new Set(),     // "day:threadId" or "threadId" keys that are open
-  threadCache: new Map(),  // id -> {thread, issues, events} (lazy, for expanders)
   primed: false,           // first render done -> flashing enabled
   sig: "",                 // last-rendered signature per view
-  // worktrees panel (right rail on Work)
+  // worktrees panel (right rail on Timeline)
   wt: { openMenu:null, editCmd:null, error:null, mergedOpen:false, busy:new Set() },
   wtData: null,            // last /api/worktrees payload (for no-network repaints)
   wtSig: "",               // last-rendered panel signature
@@ -221,24 +225,25 @@ const viewEl = $("#view");
 const mainEl = $("#main");
 
 // ---- routing ----------------------------------------------------------------
-const WORK_MODES = ["days", "threads", "events"];
+// Two primary views (Timeline, Areas) + their drill-ins (initiative/:id, area/:id) + Usage.
+// Legacy hashes (#/work, #/inflight, #/thread/:id) fold onto the new model so old links resolve.
 function parseHash(){
-  const h = (location.hash || "#/work").replace(/^#\/?/, "");
+  const h = (location.hash || "#/timeline").replace(/^#\/?/, "");
   const parts = h.split("/").filter(Boolean);
-  if(parts[0] === "thread" && parts[1]) return { view:"thread", threadId:parts[1] };
-  if(parts[0] === "inflight") return { view:"inflight" };
-  if(parts[0] === "usage") return { view:"usage" };
-  if(parts[0] === "work"){
-    const mode = WORK_MODES.includes(parts[1]) ? parts[1] : "days";
-    return { view:"work", workMode:mode };
-  }
-  return { view:"work", workMode:"days" };
+  if(parts[0] === "initiative" && parts[1]) return { view:"initiative", paramId:parts[1] };
+  if(parts[0] === "area" && parts[1])       return { view:"area", paramId:parts[1] };
+  if(parts[0] === "areas")   return { view:"areas" };
+  if(parts[0] === "usage")   return { view:"usage" };
+  if(parts[0] === "timeline") return { view:"timeline" };
+  if(parts[0] === "thread" && parts[1]) return { view:"initiative", paramId:parts[1] }; // legacy
+  return { view:"timeline" }; // work / inflight / anything else -> the stream
 }
 
 function syncNav(){
-  // thread drill-in belongs to Work; usage stands alone
-  const activeNav = state.view === "inflight" ? "inflight"
-    : state.view === "usage" ? "usage" : "work";
+  // initiative/area drill-ins belong to Areas; usage stands alone; everything else is Timeline
+  const activeNav = state.view === "usage" ? "usage"
+    : (state.view === "areas" || state.view === "area" || state.view === "initiative") ? "areas"
+    : "timeline";
   document.querySelectorAll(".nav-item").forEach((a) => {
     a.classList.toggle("active", a.dataset.view === activeNav);
   });
@@ -246,24 +251,22 @@ function syncNav(){
 
 async function onRoute(){
   const r = parseHash();
-  const changed = r.view !== state.view || r.threadId !== state.threadId
-    || (r.view === "work" && r.workMode !== state.workMode);
+  const changed = r.view !== state.view || r.paramId !== state.paramId;
   state.view = r.view;
-  state.threadId = r.threadId || null;
-  if(r.workMode) state.workMode = r.workMode;
+  state.paramId = r.paramId || null;
   if(changed){ state.sig = ""; state.primed = false; state.seenEvents.clear(); mainEl.scrollTop = 0; }
   syncNav();
-  viewEl.classList.toggle("wide", state.view === "inflight");
   await refresh(changed);
 }
 
 // ---- data + render orchestration -------------------------------------------
 async function refresh(force){
   try{
-    if(state.view === "inflight")     await renderInflight(force);
-    else if(state.view === "thread")  await renderThread(force);
-    else if(state.view === "usage")   await renderUsage(force);
-    else                              await renderWork(force);
+    if(state.view === "areas")           await renderAreas(force);
+    else if(state.view === "initiative") await renderInitiative(force);
+    else if(state.view === "area")       await renderArea(force);
+    else if(state.view === "usage")      await renderUsage(force);
+    else                                 await renderTimeline(force);
   }catch(err){
     if(!state.sig) viewEl.innerHTML = `<div class="empty"><div class="glyph"></div>`
       + `<div class="e-title">Couldn't reach the ledger</div>`
@@ -395,126 +398,83 @@ function eventRow(ev, i){
     + `</div></div>`;
 }
 
-function groupByDay(events){
-  const groups = [];
-  let cur = null;
-  for(const ev of events){
-    const k = dayKey(new Date(ev.ts));
-    if(!cur || cur.key !== k){ cur = { key:k, when:new Date(ev.ts), items:[] }; groups.push(cur); }
-    cur.items.push(ev);
-  }
-  return groups;
+// ---- update cards + areas/initiative views ---------------------------------
+// A time range for an update — one date when it's a single day, "start – end" across days.
+function fmtRange(a, b){
+  const sa = fmtShortDate(a), sb = fmtShortDate(b);
+  if(!sa && !sb) return "";
+  if(!sa) return sb;
+  if(!sb) return sa;
+  return sa === sb ? sa : sa + " – " + sb;
 }
 
-function renderDays(events){
-  if(!events.length){
-    return `<div class="empty"><div class="glyph"></div>`
-      + `<div class="e-title">No activity in this window</div>`
-      + `<div class="e-sub">events will appear here as work streams in</div></div>`;
-  }
-  let idx = 0;
-  return groupByDay(events).map((g) => {
-    const dl = dayLabel(g.when);
-    const rows = g.items.map((ev) => eventRow(ev, idx++)).join("");
-    return `<div class="day-group" data-key="day-${esc(g.key)}"><div class="day-head">`
-      + `<span class="d-label">${esc(dl.label)}</span>`
-      + `<span class="d-date">${esc(dl.date)}</span>`
-      + `<span class="d-rule"></span>`
-      + `<span class="d-count">${g.items.length}</span>`
-      + `</div><div class="events">${rows}</div></div>`;
-  }).join("");
-}
-
-function markSeen(events){ for(const ev of events) state.seenEvents.add(ev.id); state.primed = true; }
-
-async function renderThread(force){
-  const data = await api("/api/thread/" + encodeURIComponent(state.threadId));
-  state.threadCache.set(String(state.threadId), data); // warm the cache for Work expanders
-  const th = data.thread || {};
-  const events = data.events || [];
-  const issues = (data.issues || []).slice()
-    .sort((a, b) => (isUnfinished(b.status) - isUnfinished(a.status)) || (b.number - a.number));
-  const w = th.work || emptyWork;
-  const sig = "th:" + state.threadId + ":" + events.length + ":" + issues.length
-    + ":" + JSON.stringify(w);
-  if(!force && sig === state.sig) return;
-
-  const sm = statusMeta(th.status);
-  const summary = th.summary
-    ? `<p class="th-summary">${fmtSummary(th.summary)}</p>`
-    : issues.length ? "" /* pure-backlog: the issue list carries the story */
-    : `<p class="th-summary none">No synthesized summary yet — the story is still being distilled.</p>`;
-  const genesis = th.genesis
-    ? `<div class="th-genesis"><span class="rune">decisions</span><span>${esc(th.genesis)}</span></div>`
-    : "";
-
-  const head = `<div class="thread-head">`
-    + `<div class="th-status-row">`
-    +   `<span class="pill" style="--pc:${sm.pc}"><span class="pdot"></span>${esc(sm.label)}</span>`
-    +   `<span class="th-title">${esc(th.title || "Untitled initiative")}</span>`
-    + `</div>${summary}${genesis}`
-    + lifecycleIndicator(w)
-    + `</div>`;
-
-  // the important part: issues with their lifecycle status
-  const issuesSection = issues.length
-    ? `<div class="section"><div class="section-head"><h2>Issues</h2><span class="rule"></span>`
-      + `<span class="n">${issues.length}</span></div>`
-      + `<div class="exp-issues detail">${issues.map(issueRow).join("")}</div></div>`
-    : "";
-
-  // commits & merges — demoted beneath the lifecycle
-  const commitsSection = events.length
-    ? `<div class="section"><div class="section-head"><h2>Commits &amp; merges</h2>`
-      + `<span class="rule"></span><span class="n">${events.length}</span></div>`
-      + renderDays(events) + `</div>`
-    : "";
-
-  setTopbar(`<a class="tb-back" href="#/work"><span class="arw">←</span>Work</a>`
-    + `<span class="tb-title">${esc(th.title || "Initiative")}</span>`
-    + `<span class="tb-spacer"></span>${liveTag()}`);
-
-  paint(head + issuesSection + commitsSection, { scrollSafe: !force && state.primed });
-  markSeen(events);
-  state.sig = sig;
-}
-
-// ---- work: day-grouped initiatives, lifecycle-first --------------------------
-// A single commit/merge — the deepest detail, demoted beneath the story.
-function evidenceRow(ev, opts){
+// A loose event — one that belongs to no update. A lightweight dashed row (existing .loose-row
+// styling), quieter than an Update card.
+function looseRow(ev, i){
   const refs = refChips(ev.refs);
-  const dot = typeMeta(ev.type).node === "hollow" ? "ev-dot hollow" : "ev-dot";
-  const time = (opts && opts.hideTime) ? ""
-    : `<span class="ev-time">${fmtShortDate(ev.ts)}</span>`;
-  return `<div class="ev-line" style="--hue:${hueVar(ev.type)}">`
-    + time
-    + `<span class="${dot}"></span>`
-    + `<span class="ev-type">${esc(typeMeta(ev.type).label)}</span>`
-    + `<span class="ev-sum">${esc(ev.summary)}</span>`
-    + (refs ? `<span class="ev-refs">${refs}</span>` : "")
+  const t = typeMeta(ev.type);
+  return `<div class="loose-row" data-key="ev-${esc(ev.id)}" style="--hue:${hueVar(ev.type)};--d:${Math.min(i, 12) * 26}ms">`
+    + `<span class="lnode"></span>`
+    + `<div class="loose-body">`
+    +   `<div class="loose-sum">${esc(ev.summary)}</div>`
+    +   `<div class="loose-meta"><span class="type-tag">${esc(t.label)}</span>`
+    +     (refs ? `<span class="sep">·</span>${refs}` : "")
+    +   `</div>`
+    + `</div>`
+    + `<span class="loose-age">${esc(relAge(ev.ts))}</span>`
     + `</div>`;
 }
 
-// compact "4 done · 1 unfinished" lifecycle read-out + a proportional bar
-function lifecycleIndicator(w){
-  w = w || emptyWork;
-  const unfin = (w.inProgress || 0) + (w.shipped || 0);
-  const segs = [
-    ["done", w.done], ["in_progress", w.inProgress], ["shipped", w.shipped], ["todo", w.todo],
-  ].filter(([, n]) => n > 0);
-  const total = w.total || segs.reduce((a, [, n]) => a + n, 0) || 1;
-  const bar = segs.map(([k, n]) =>
-    `<span class="lc-seg" style="--pc:${lifeMeta(k).pc};flex:${n}" title="${n} ${esc(lifeMeta(k).label)}"></span>`).join("");
-  const parts = [];
-  if(w.done) parts.push(`<span class="lc-n done">${w.done} done</span>`);
-  if(unfin)  parts.push(`<span class="lc-n unfin">${unfin} unfinished</span>`);
-  if(w.todo) parts.push(`<span class="lc-n todo">${w.todo} to&nbsp;do</span>`);
-  const label = parts.length ? parts.join(`<span class="lc-dot">·</span>`) : `<span class="lc-n todo">no issues</span>`;
-  return `<div class="lifecycle"><div class="lc-bar" aria-hidden="true">${bar || `<span class="lc-seg" style="--pc:var(--ink-whisper);flex:1"></span>`}</div>`
-    + `<div class="lc-label">${label}</div></div>`;
+// The heart of the Timeline: one Update — a time-bound cluster of events under a thread. Shows
+// the thread title + area chip + lifecycle pill (its "head", suppressed on a thread page where
+// that context is already the header), the succinct why+outcome summary, a time range, and a
+// collapsed "N events" disclosure that expands to the raw event rows (reused eventRow + nodes).
+function updateCard(u, i, opts){
+  opts = opts || {};
+  const events = u.events || [];
+  const n = u.event_count != null ? u.event_count : events.length;
+  const hasEvents = events.length > 0;
+  const range = fmtRange(u.ts_start, u.ts_end);
+  const evId = "updev-" + esc(u.id);
+
+  let head = "";
+  if(opts.showHead !== false){
+    const isArea = u.thread_kind === "area";
+    const href = (isArea ? "#/area/" : "#/initiative/") + encodeURIComponent(u.thread_id);
+    const areaChip = (!isArea && u.area_id != null)
+      ? `<a class="area-chip" href="#/area/${encodeURIComponent(u.area_id)}">${esc(u.area_title || "area")}</a>`
+      : "";
+    const lm = initLifeMeta(u.lifecycle);
+    const life = (!isArea && u.lifecycle)
+      ? `<span class="pill" style="--pc:${lm.pc}"><span class="pdot"></span>${esc(lm.label)}</span>`
+      : "";
+    const live = u.sealed ? "" : `<span class="upd-live">open</span>`;
+    head = `<div class="upd-head">`
+      + `<a class="upd-title" href="${href}">${esc(u.thread_title || "Untitled")}</a>`
+      + areaChip + life + `<span class="sp"></span>` + live
+      + `</div>`;
+  }
+
+  const summary = u.summary
+    ? `<div class="upd-summary">${fmtSummary(u.summary)}</div>`
+    : `<div class="upd-summary none">No summary distilled for this update yet.</div>`;
+
+  const toggle = hasEvents
+    ? `<button class="commits-toggle" data-target="${evId}" aria-expanded="false">`
+      + `<span class="chev">›</span> ${n} event${n === 1 ? "" : "s"}</button>`
+    : "";
+  const meta = (range || toggle)
+    ? `<div class="upd-meta">${range ? `<span class="upd-range">${esc(range)}</span>` : ""}${toggle}</div>`
+    : "";
+  const evList = hasEvents
+    ? `<div class="events" id="${evId}" hidden>${events.map((ev, j) => eventRow(ev, j)).join("")}</div>`
+    : "";
+
+  return `<article class="upd-card" data-key="upd-${esc(u.id)}" style="--d:${Math.min(i, 12) * 26}ms">`
+    + head + summary + meta + evList + `</article>`;
 }
 
-// an issue row inside a thread expander — the lifecycle IS the content
+// an issue row inside a thread — the lifecycle IS the content
 function issueRow(iss){
   const lm = lifeMeta(iss.status);
   const unf = isUnfinished(iss.status);
@@ -535,272 +495,217 @@ function issueRow(iss){
     + `</div>`;
 }
 
-// the body of an expanded thread: issues (lifecycle) first, commits demoted
-function expanderBody(id){
-  const openLink = `<a class="exp-open" href="#/thread/${esc(id)}">Open initiative<span class="arw"> →</span></a>`;
-  const d = state.threadCache.get(String(id));
-  if(!d) return `<div class="exp-loading">reading initiative…</div>`
-    + `<div class="exp-foot">${openLink}</div>`;
-  const issues = (d.issues || []).slice()
-    .sort((a, b) => (isUnfinished(b.status) - isUnfinished(a.status))
-      || (b.number - a.number));
-  const events = d.events || [];
-  const issuesHtml = issues.length
-    ? `<div class="exp-issues">${issues.map(issueRow).join("")}</div>`
-    : `<div class="exp-none">no issues linked to this initiative yet</div>`;
-  const evId = "ev-" + id;
-  // footer row: the commits disclosure sits at the left, "Open initiative" at the right;
-  // the commit list (when toggled open) drops full-width beneath.
-  const toggle = events.length
-    ? `<button class="commits-toggle" data-target="${evId}" aria-expanded="false">`
-      +   `<span class="chev">›</span> ${events.length} commit${events.length === 1 ? "" : "s"} &amp; merge${events.length === 1 ? "" : "s"}</button>`
-    : `<span></span>`;
-  const commitsList = events.length
-    ? `<div class="commits-list" id="${evId}" hidden>${events.map((ev) => evidenceRow(ev)).join("")}</div>`
-    : "";
-  return issuesHtml + `<div class="exp-foot">${toggle}${openLink}</div>` + commitsList;
-}
-
-// a thread as a primary row (used in both Days and Threads modes)
-function threadRow(th, key, i){
-  const w = th.work || emptyWork;
-  const open = state.expanded.has(key);
-  // Hierarchy: the **headline** reads as the title; the rest of the paragraph sits below,
-  // a notch down. No summary -> genesis or a plain backlog line as the body.
-  let hero;
-  if(th.summary){
-    const { head, rest } = splitSummary(th.summary);
-    hero = (head ? `<p class="tr-head">${esc(head)}</p>` : "")
-      + (rest ? `<p class="tr-rest">${esc(rest)}</p>` : "")
-      + (!head && !rest ? `<p class="tr-rest">${esc(th.summary)}</p>` : "");
-  } else if(th.genesis){
-    hero = `<p class="tr-rest is-genesis">${esc(th.genesis)}</p>`;
-  } else {
-    hero = `<p class="tr-rest none">Backlog initiative — ${w.total || 0} issue${w.total === 1 ? "" : "s"}, no summary yet.</p>`;
-  }
-  return `<article class="trow ${open ? "open" : ""}" data-key="trow-${esc(key)}" data-href="#/thread/${esc(th.id)}" `
-    + `style="--d:${Math.min(i, 12) * 26}ms">`
-    + `<button class="trow-head" data-key="${esc(key)}" data-id="${esc(th.id)}" aria-expanded="${open}">`
-    +   `<span class="chev">›</span>`
-    +   `<span class="trow-body">`
-    +     `<span class="trow-title">${esc(th.title || "Untitled initiative")}</span>`
-    +     hero
-    +     lifecycleIndicator(w)
-    +   `</span>`
-    + `</button>`
-    + `<div class="trow-detail" ${open ? "" : "hidden"}>${open ? expanderBody(th.id) : ""}</div>`
-    + `</article>`;
-}
-
-// the money panel: every dangling loose thread across the repo
-function unfinishedPanel(items){
-  if(!items.length){
-    return `<div class="unf-panel clear">`
-      + `<span class="unf-check">✓</span>`
-      + `<span class="unf-clear-txt">Nothing dangling — every branch has landed and closed.</span>`
-      + `</div>`;
-  }
-  const rows = items.map((u) => {
-    const lm = lifeMeta(u.status);
-    const kind = u.status === "shipped" ? "merged, never closed" : "open branch";
-    return `<a class="unf-row" href="#/thread/${esc(u.thread.id)}" style="--pc:${lm.pc}">`
-      + `<span class="unf-kind">${esc(kind)}</span>`
-      + `<span class="unf-num">#${esc(u.number)}</span>`
-      + `<span class="unf-title">${esc(u.title)}</span>`
-      + (u.branch ? `<span class="unf-branch"><span class="k">${icon("branch")}</span>${esc(u.branch)}</span>` : "")
-      + `<span class="unf-thread">${esc(u.thread.title)}</span>`
-      + `</a>`;
-  }).join("");
-  return `<div class="unf-panel">`
-    + `<div class="unf-head"><span class="unf-pulse"></span>`
-    +   `<span class="unf-title-lbl">Unfinished</span>`
-    +   `<span class="unf-count">${items.length} loose thread${items.length === 1 ? "" : "s"}</span>`
-    +   `<span class="unf-sub">open branches &amp; shipped-but-open — needs a landing</span></div>`
-    + `<div class="unf-list">${rows}</div></div>`;
-}
-
-function workControls(){
-  const modeBtn = (m, label) =>
-    `<a class="seg ${state.workMode === m ? "on" : ""}" href="#/work/${m}">${label}</a>`;
-  const filterBtn = (f, label) =>
-    `<button class="seg ${state.filter === f ? "on" : ""}" data-filter="${f}">${label}</button>`;
-  return `<span class="tb-title">Work</span>`
-    + `<span class="tb-spacer"></span>`
-    + `<div class="segmented" role="tablist">${modeBtn("days", "Days")}${modeBtn("threads", "Threads")}${modeBtn("events", "Events")}</div>`
-    + `<div class="segmented filter">${filterBtn("all", "All")}${filterBtn("unfinished", "Unfinished")}</div>`
-    + liveTag();
-}
-
-// The Work view is a two-column shell: the timeline on the left, the worktrees panel on the
-// right. Built once per entry so the panel keeps its own state (open menus, focus) across the
-// left column's 4s repaints.
-function ensureWorkShell(){
-  if($("#workCol")) return;
-  viewEl.innerHTML = `<div class="work-wrap"><div class="work-col" id="workCol"></div>`
-    + `<aside class="work-aside" id="workAside"></aside></div>`;
-  state.sig = ""; state.wtSig = "";
-}
-
-async function renderWork(force){
-  ensureWorkShell();
-  renderWorktreePanel(force); // right rail — independent, runs concurrently
-
-  const [threads, timeline] = await Promise.all([
-    api("/api/threads"),
-    api("/api/timeline?days=3650&limit=500"),
-  ]);
-  const unfilter = state.filter === "unfinished";
-  const unfinishedItems = threads.flatMap((t) =>
-    (t.work && t.work.unfinished ? t.work.unfinished : []).map((u) => ({ ...u, thread: t })));
-  const unfinishedThreadIds = new Set(unfinishedItems.map((u) => u.thread.id));
-
-  const sig = "wk:" + state.workMode + ":" + state.filter + ":" + threads.length + ":"
-    + threads.map((t) => t.id + "@" + t.status + "@" + t.last_event_ts + "@"
-        + (t.summary ? 1 : 0) + "@" + JSON.stringify(t.work || {})).join(",")
-    + ":" + (timeline[0] ? timeline[0].id : 0);
-  if(!force && sig === state.sig) return;
-
-  const byId = new Map(threads.map((t) => [t.id, t]));
-  let html = "";
-  // only surface the unfinished panel when something is actually dangling — no zero-state
-  if(!unfilter && unfinishedItems.length) html += unfinishedPanel(unfinishedItems);
-
-  if(state.workMode === "events"){
-    // flat chronological ledger — the "what happened when" lens
-    let events = timeline;
-    if(unfilter) events = events.filter((e) => e.thread_id != null && unfinishedThreadIds.has(e.thread_id));
-    html += renderDays(events);
-    markSeen(timeline);
-  } else if(state.workMode === "threads"){
-    // initiatives as a flat list, in-flight before done, newest first
-    const rank = (s) => (s === "done" ? 1 : 0);
-    const when = (t) => new Date(t.last_event_ts || t.updated_at || 0).getTime();
-    let list = threads.slice().sort((a, b) => rank(a.status) - rank(b.status) || when(b) - when(a));
-    if(unfilter) list = list.filter((t) => unfinishedThreadIds.has(t.id));
-    html += list.length
-      ? `<div class="wlist">${list.map((t, i) => threadRow(t, "t:" + t.id, i)).join("")}</div>`
-      : emptyBlock("Nothing unfinished", "every initiative here has landed");
-    state.primed = true;
-  } else {
-    // DAYS: initiatives grouped by the day they had activity
-    const days = [];
-    let cur = null;
-    let idx = 0;
-    for(const ev of timeline){
-      const k = dayKey(new Date(ev.ts));
-      if(!cur || cur.key !== k){ cur = { key:k, when:new Date(ev.ts), threads:new Map(), loose:[] }; days.push(cur); }
-      if(ev.thread_id != null && byId.has(ev.thread_id)){
-        if(!cur.threads.has(ev.thread_id)) cur.threads.set(ev.thread_id, []);
-        cur.threads.get(ev.thread_id).push(ev);
-      } else {
-        cur.loose.push(ev);
-      }
-    }
-    const groups = days.map((g) => {
-      let entries = [...g.threads.keys()].map((tid) => byId.get(tid)).filter(Boolean);
-      if(unfilter) entries = entries.filter((t) => unfinishedThreadIds.has(t.id));
-      const rows = entries.map((t) => threadRow(t, g.key + ":" + t.id, idx++)).join("");
-      const loose = (!unfilter && g.loose.length)
-        ? `<div class="day-loose"><div class="day-loose-head">Other events</div>`
-          + `${g.loose.map((ev) => evidenceRow(ev, { hideTime: true })).join("")}</div>`
-        : "";
-      if(!rows && !loose) return "";
-      const dl = dayLabel(g.when);
-      return `<div class="day-group" data-key="day-${esc(g.key)}"><div class="day-head">`
-        + `<span class="d-label">${esc(dl.label)}</span><span class="d-date">${esc(dl.date)}</span>`
-        + `<span class="d-rule"></span><span class="d-count">${entries.length + (loose ? g.loose.length : 0)}</span>`
-        + `</div>${rows}${loose}</div>`;
-    }).filter(Boolean).join("");
-    html += groups || emptyBlock(
-      unfilter ? "Nothing unfinished" : "No activity yet",
-      unfilter ? "every branch has landed" : "initiatives appear here as work streams in");
-    state.primed = true;
-  }
-
-  setTopbar(workControls());
-  updateUnfinishedFoot(unfinishedItems.length);
-  paint(html, { scrollSafe: !force && state.workMode === "events", target: $("#workCol") });
-  state.sig = sig;
-}
-
 function emptyBlock(title, sub){
   return `<div class="empty"><div class="glyph"></div>`
     + `<div class="e-title">${esc(title)}</div><div class="e-sub">${esc(sub)}</div></div>`;
 }
 
-function updateUnfinishedFoot(n){
-  const el = $("#looseFoot");
-  if(!el) return;
-  el.innerHTML = n
-    ? `<span class="n">${n}</span> unfinished`
-    : `nothing unfinished`;
+function markSeenUpdates(updates, loose){
+  for(const u of updates) for(const ev of (u.events || [])) state.seenEvents.add(ev.id);
+  for(const ev of (loose || [])) state.seenEvents.add(ev.id);
+  state.primed = true;
 }
 
-// lazy-load a thread's issues/commits the first time its row is expanded
-async function ensureThread(id){
-  const key = String(id);
-  if(state.threadCache.has(key)) return state.threadCache.get(key);
-  const d = await api("/api/thread/" + encodeURIComponent(id));
-  state.threadCache.set(key, d);
-  return d;
+// ---- Timeline: the stream of Update cards (default view) --------------------
+// Timeline is the one view that spans full width: the stream fills the space up to the worktrees
+// panel pinned at the right edge. Built once per entry so the panel keeps its own state across
+// the stream's live repaints.
+function ensureTimelineShell(){
+  if($("#timelineCol")) return;
+  viewEl.innerHTML = `<div class="work-wrap"><div class="work-col" id="timelineCol"></div>`
+    + `<aside class="work-aside" id="workAside"></aside></div>`;
+  state.sig = ""; state.wtSig = "";
 }
 
-// ---- in-flight rendering ----------------------------------------------------
-function threadCard(th, events, i){
-  const w = th.work || emptyWork;
-  const unfin = (w.inProgress || 0) + (w.shipped || 0);
-  const accent = unfin ? "var(--t-blocked)" : statusMeta(th.status).pc;
-  const blurb = th.summary
-    ? `<div class="card-summary">${fmtSummary(th.summary)}</div>`
-    : th.genesis
-    ? `<div class="card-genesis">${esc(th.genesis)}</div>`
-    : `<div class="card-genesis none">backlog — ${w.total || 0} issue${w.total === 1 ? "" : "s"}</div>`;
-  const badge = unfin
-    ? `<span class="unfin-badge">${unfin} unfinished</span>`
-    : `<span class="pill" style="--pc:${statusMeta(th.status).pc}"><span class="pdot"></span>${esc(statusMeta(th.status).label)}</span>`;
-  return `<div class="card" data-key="card-${esc(th.id)}" data-href="#/thread/${esc(th.id)}" style="--accent:${accent};--d:${Math.min(i,8)*40}ms">`
-    + `<div class="card-top"><span class="card-title">${esc(th.title || "Untitled thread")}</span>${badge}</div>`
-    + blurb
-    + lifecycleIndicator(w)
-    + `</div>`;
-}
+async function renderTimeline(force){
+  ensureTimelineShell();
+  renderWorktreePanel(force); // right rail — independent, runs concurrently
 
-async function renderInflight(force){
-  const data = await api("/api/inflight");
-  const threads = data.threads || [];
-  const unfinishedItems = threads.flatMap((t) =>
-    (t.work && t.work.unfinished ? t.work.unfinished : []).map((u) => ({ ...u, thread: t })));
+  const data = await api("/api/timeline");
+  // Code defensively against the seam: the new shape is { updates, loose }; tolerate a bare array
+  // (the old events-only endpoint) by treating it as loose events.
+  let updates, loose;
+  if(Array.isArray(data)){ updates = []; loose = data; }
+  else { updates = data.updates || []; loose = data.loose || []; }
 
-  const sig = "if:" + threads.length + ":"
-    + threads.map((t) => t.id + "@" + t.last_event_ts + "@" + JSON.stringify(t.work || {})).join(",");
+  const sig = "tl:" + updates.length + ":" + loose.length + ":"
+    + updates.map((u) => u.id + "@" + u.ts_end + "@" + (u.sealed ? 1 : 0)
+        + "@" + (u.summary ? 1 : 0) + "@" + (u.event_count || (u.events || []).length)).join(",")
+    + ":" + loose.map((e) => e.id).join(",");
   if(!force && sig === state.sig) return;
 
-  // unfinished before finished; then newest activity first
-  const rank = (t) => ((t.work && ((t.work.inProgress || 0) + (t.work.shipped || 0))) ? 0 : 1);
-  const when = (t) => new Date(t.last_event_ts || t.updated_at || 0).getTime();
-  const sorted = threads.slice().sort((a, b) => rank(a) - rank(b) || when(b) - when(a));
+  let html = "";
+  if(updates.length || loose.length){
+    if(updates.length){
+      html += `<div class="upd-stream">${updates.map((u, i) => updateCard(u, i, { context:"timeline" })).join("")}</div>`;
+    }
+    if(loose.length){
+      html += `<div class="section loose-section"><div class="section-head"><h2>Loose events</h2>`
+        + `<span class="rule"></span><span class="n">${loose.length}</span></div>`
+        + `<div class="loose-list">${loose.map((e, i) => looseRow(e, i)).join("")}</div></div>`;
+    }
+  } else {
+    html += emptyBlock("No updates yet", "activity clusters into updates as work streams in");
+  }
 
-  let html = unfinishedPanel(unfinishedItems);
-
-  html += `<div class="section"><div class="section-head"><h2>Initiatives in flight</h2>`
-    + `<span class="rule"></span><span class="n">${threads.length}</span></div>`;
-  html += threads.length
-    ? `<div class="cards">${sorted.map((th, i) => threadCard(th, [], i)).join("")}</div>`
-    : `<div class="empty"><div class="glyph"></div><div class="e-title">Nothing in flight</div>`
-      + `<div class="e-sub">all initiatives are at rest</div></div>`;
-  html += `</div>`;
-
-  setTopbar(`<span class="tb-title">In flight</span>`
-    + `<span class="tb-sub">${threads.length} initiative${threads.length === 1 ? "" : "s"} · ${unfinishedItems.length} unfinished</span>`
+  setTopbar(`<span class="tb-title">Timeline</span>`
     + `<span class="tb-spacer"></span>${liveTag()}`);
-  $("#inflightBadge").textContent = threads.length || "";
-  updateUnfinishedFoot(unfinishedItems.length);
+  const tb = $("#timelineBadge"); if(tb) tb.textContent = updates.length || "";
 
-  paint(html);
+  paint(html, { scrollSafe: !force && state.primed, target: $("#timelineCol") });
+  markSeenUpdates(updates, loose);
   state.sig = sig;
 }
 
-// ---- worktrees panel (right rail on Work) ----------------------------------
+// ---- Areas: evergreen threads, each with its initiatives --------------------
+// one initiative, as a row inside an area card or an area page
+function initRow(it){
+  const lm = initLifeMeta(it.lifecycle);
+  const age = it.last_event_ts ? `<span class="init-age">${esc(relAge(it.last_event_ts))}</span>` : "";
+  const parts = [];
+  if(it.issue_count) parts.push(it.issue_count + " issue" + (it.issue_count === 1 ? "" : "s"));
+  if(it.event_count) parts.push(it.event_count + " event" + (it.event_count === 1 ? "" : "s"));
+  const counts = parts.length ? `<span class="init-count">${esc(parts.join(" · "))}</span>` : "";
+  return `<a class="init-row" href="#/initiative/${encodeURIComponent(it.id)}">`
+    + `<span class="pill" style="--pc:${lm.pc}"><span class="pdot"></span>${esc(lm.label)}</span>`
+    + `<span class="init-title">${esc(it.title || "Untitled initiative")}</span>`
+    + counts + age
+    + `</a>`;
+}
+
+function areaCard(a){
+  const inits = a.initiatives || [];
+  const desc = a.description ? `<p class="area-desc">${esc(a.description)}</p>` : "";
+  const status = a.summary ? `<p class="area-status">${fmtSummary(a.summary)}</p>` : "";
+  const age = a.last_event_ts ? `<span class="area-age">${esc(relAge(a.last_event_ts))}</span>` : "";
+  const body = inits.length
+    ? `<div class="area-inits">${inits.map(initRow).join("")}</div>`
+    : `<div class="area-none">no initiatives yet</div>`;
+  return `<article class="area-card" data-key="area-${esc(a.id)}">`
+    + `<div class="area-top"><a class="area-title" href="#/area/${encodeURIComponent(a.id)}">${esc(a.title || "Untitled area")}</a>${age}</div>`
+    + desc + status + body
+    + `</article>`;
+}
+
+async function renderAreas(force){
+  const data = await api("/api/areas");
+  const areas = data.areas || [];
+
+  const sig = "as:" + areas.length + ":"
+    + areas.map((a) => a.id + "@" + (a.summary ? 1 : 0) + "@" + a.last_event_ts
+        + "@" + (a.initiatives || []).map((it) => it.id + ":" + it.lifecycle + ":" + it.last_event_ts).join("+")).join(",");
+  if(!force && sig === state.sig) return;
+
+  const html = areas.length
+    ? `<div class="area-list">${areas.map(areaCard).join("")}</div>`
+    : emptyBlock("No areas yet", "areas group your initiatives — they'll appear here once the ledger is organized");
+
+  setTopbar(`<span class="tb-title">Areas</span>`
+    + `<span class="tb-sub">${areas.length} area${areas.length === 1 ? "" : "s"}</span>`
+    + `<span class="tb-spacer"></span>${liveTag()}`);
+  const ab = $("#areasBadge"); if(ab) ab.textContent = areas.length || "";
+
+  paint(html);
+  state.primed = true;
+  state.sig = sig;
+}
+
+// ---- Initiative view: the why + issues + a stack of Update cards ------------
+async function renderInitiative(force){
+  const data = await api("/api/initiative/" + encodeURIComponent(state.paramId));
+  const it = data.initiative || {};
+  const updates = data.updates || [];
+  const issues = (data.issues || []).slice()
+    .sort((a, b) => (isUnfinished(b.status) - isUnfinished(a.status)) || ((b.number || 0) - (a.number || 0)));
+
+  const sig = "in:" + state.paramId + ":" + it.lifecycle + ":" + issues.length + ":" + updates.length
+    + ":" + updates.map((u) => u.id + "@" + u.ts_end + "@" + (u.sealed ? 1 : 0) + "@" + (u.summary ? 1 : 0)).join(",");
+  if(!force && sig === state.sig) return;
+
+  const lm = initLifeMeta(it.lifecycle);
+  const areaChip = it.area_id != null
+    ? `<a class="area-chip" href="#/area/${encodeURIComponent(it.area_id)}">${esc(it.area_title || "area")}</a>`
+    : "";
+  const why = it.why
+    ? `<p class="th-summary">${fmtSummary(it.why)}</p>`
+    : `<p class="th-summary none">No stated why yet — the motivation is still being distilled.</p>`;
+  const desc = it.description
+    ? `<div class="th-genesis"><span class="rune">detail</span><span>${esc(it.description)}</span></div>`
+    : "";
+  const head = `<div class="thread-head">`
+    + `<div class="th-status-row">`
+    +   (it.lifecycle ? `<span class="pill" style="--pc:${lm.pc}"><span class="pdot"></span>${esc(lm.label)}</span>` : "")
+    +   `<span class="th-title">${esc(it.title || "Untitled initiative")}</span>`
+    +   areaChip
+    + `</div>${why}${desc}</div>`;
+
+  const issuesSection = issues.length
+    ? `<div class="section"><div class="section-head"><h2>Issues</h2><span class="rule"></span>`
+      + `<span class="n">${issues.length}</span></div>`
+      + `<div class="exp-issues detail">${issues.map(issueRow).join("")}</div></div>`
+    : "";
+
+  const updatesSection = `<div class="section"><div class="section-head"><h2>Updates</h2>`
+    + `<span class="rule"></span>${updates.length ? `<span class="n">${updates.length}</span>` : ""}</div>`
+    + (updates.length
+      ? `<div class="upd-stream">${updates.map((u, i) => updateCard(u, i, { showHead:false })).join("")}</div>`
+      : emptyBlock("No updates yet", "activity clusters into updates as work streams in"))
+    + `</div>`;
+
+  const backHref = it.area_id != null ? "#/area/" + encodeURIComponent(it.area_id) : "#/areas";
+  const backLabel = it.area_title || "Areas";
+  setTopbar(`<a class="tb-back" href="${backHref}"><span class="arw">←</span>${esc(backLabel)}</a>`
+    + `<span class="tb-title">${esc(it.title || "Initiative")}</span>`
+    + `<span class="tb-spacer"></span>${liveTag()}`);
+
+  paint(head + issuesSection + updatesSection);
+  markSeenUpdates(updates, []);
+  state.sig = sig;
+}
+
+// ---- Area view: description + rolling status + initiatives + updates --------
+async function renderArea(force){
+  const data = await api("/api/area/" + encodeURIComponent(state.paramId));
+  const a = data.area || {};
+  const inits = data.initiatives || [];
+  const updates = data.updates || [];
+
+  const sig = "ar:" + state.paramId + ":" + (a.summary ? 1 : 0) + ":" + inits.length + ":" + updates.length
+    + ":" + inits.map((it) => it.id + "@" + it.lifecycle + "@" + it.last_event_ts).join(",")
+    + ":" + updates.map((u) => u.id + "@" + u.ts_end + "@" + (u.sealed ? 1 : 0)).join(",");
+  if(!force && sig === state.sig) return;
+
+  const desc = a.description ? `<p class="th-summary">${esc(a.description)}</p>` : "";
+  const status = a.summary
+    ? `<div class="th-genesis"><span class="rune">status</span><span>${fmtSummary(a.summary)}</span></div>`
+    : "";
+  const head = `<div class="thread-head">`
+    + `<div class="th-status-row"><span class="th-title">${esc(a.title || "Untitled area")}</span></div>`
+    + `${desc}${status}</div>`;
+
+  const initsSection = `<div class="section"><div class="section-head"><h2>Initiatives</h2>`
+    + `<span class="rule"></span>${inits.length ? `<span class="n">${inits.length}</span>` : ""}</div>`
+    + (inits.length
+      ? `<div class="area-inits flat">${inits.map(initRow).join("")}</div>`
+      : emptyBlock("No initiatives yet", "initiatives under this area appear here"))
+    + `</div>`;
+
+  const updatesSection = updates.length
+    ? `<div class="section"><div class="section-head"><h2>Recent updates</h2>`
+      + `<span class="rule"></span><span class="n">${updates.length}</span></div>`
+      + `<div class="upd-stream">${updates.map((u, i) => updateCard(u, i, { showHead:false })).join("")}</div></div>`
+    : "";
+
+  setTopbar(`<a class="tb-back" href="#/areas"><span class="arw">←</span>Areas</a>`
+    + `<span class="tb-title">${esc(a.title || "Area")}</span>`
+    + `<span class="tb-spacer"></span>${liveTag()}`);
+
+  paint(head + initsSection + updatesSection);
+  markSeenUpdates(updates, []);
+  state.sig = sig;
+}
+
+// ---- worktrees panel (right rail on Timeline) ------------------------------
 // Organized by BRANCH. A worktree can only hold one branch at a time, so "which worktree is on
 // which branch" is really a property of the branch — every local branch is a card, pinned with
 // the default branch first. A card's primary action (top line) is the Run split-button when it
@@ -1301,12 +1206,15 @@ async function loadMeta(){
     $("#repoOwner").textContent = slash >= 0 ? repo.slice(0, slash + 1) : repo;
     $("#repoName").textContent = slash >= 0 ? repo.slice(slash + 1) : "";
     const cap = $("#capture");
-    cap.hidden = false;
-    cap.classList.toggle("explicit", m.capture === "explicit");
-    $(".cap-label", cap).textContent = m.capture || "live";
-    $("#workBadge").textContent = m.threads != null ? m.threads : "";
-    $("#usageBadge").textContent = m.tokens ? fmtTokens(m.tokens) : "";
-    $("#looseFoot").innerHTML = m.loose
+    if(cap){
+      cap.hidden = false;
+      cap.classList.toggle("explicit", m.capture === "explicit");
+      const cl = $(".cap-label", cap); if(cl) cl.textContent = m.capture || "live";
+    }
+    const usageBadge = $("#usageBadge");
+    if(usageBadge) usageBadge.textContent = m.tokens ? fmtTokens(m.tokens) : "";
+    const foot = $("#looseFoot");
+    if(foot) foot.innerHTML = m.loose
       ? `<span class="n">${m.loose}</span> loose end${m.loose===1?"":"s"} open`
       : `no loose ends`;
   }catch(e){ /* meta is best-effort chrome; views still render */ }
@@ -1538,38 +1446,17 @@ async function selectProject(slug){
   rememberProject(slug);
   // Wipe every per-project cache — we're looking at a different ledger now.
   state.sig = ""; state.primed = false;
-  state.seenEvents.clear(); state.threadCache.clear(); state.expanded.clear();
+  state.seenEvents.clear();
   renderMenu();
   await loadMeta();
-  // A thread id belongs to the old project; drop back to Work rather than 404. Otherwise
-  // just re-render the current view against the new project.
-  if(state.view === "thread"){ location.hash = "#/work"; }
-  else { state.threadId = null; await refresh(true); }
+  // An initiative/area id belongs to the old project; drop back to the Timeline rather than 404.
+  // Otherwise just re-render the current view against the new project.
+  if(state.view === "initiative" || state.view === "area"){ location.hash = "#/timeline"; }
+  else { state.paramId = null; await refresh(true); }
 }
 
 // ---- interactions -----------------------------------------------------------
-// expand a thread row: reveal its issues (lazy-fetched), commits demoted below
-async function toggleRow(head){
-  const key = head.dataset.key;
-  const id = head.dataset.id;
-  const row = head.closest(".trow");
-  const detail = row.querySelector(".trow-detail");
-  if(state.expanded.has(key)){
-    state.expanded.delete(key);
-    row.classList.remove("open");
-    head.setAttribute("aria-expanded", "false");
-    detail.hidden = true; detail.innerHTML = "";
-    return;
-  }
-  state.expanded.add(key);
-  row.classList.add("open");
-  head.setAttribute("aria-expanded", "true");
-  detail.hidden = false;
-  detail.innerHTML = expanderBody(id); // "reading…" until cached
-  try{ await ensureThread(id); }catch(e){ /* keep loading note */ }
-  if(state.expanded.has(key) && detail.isConnected) detail.innerHTML = expanderBody(id);
-}
-
+// toggle an inline disclosure (the "N events" list on an Update card, or a commits list)
 function toggleCommits(btn){
   const box = document.getElementById(btn.dataset.target);
   if(!box) return;
@@ -1585,14 +1472,7 @@ function initInteractions(){
     if(wtAct && wtAct.closest("#workAside")){ e.preventDefault(); handleWtAction(wtAct); return; }
     const commits = e.target.closest(".commits-toggle");
     if(commits){ e.preventDefault(); toggleCommits(commits); return; }
-    const head = e.target.closest(".trow-head");
-    if(head){ e.preventDefault(); toggleRow(head); return; }
-    if(e.target.closest("a")) return; // let explicit links behave
-    const card = e.target.closest(".card");
-    if(card && card.dataset.href){
-      if(window.getSelection && String(window.getSelection()).length) return; // reading
-      location.hash = card.dataset.href;
-    }
+    // everything else (Update cards, area/initiative rows) navigates via explicit <a> links
   });
 
   // Enter saves / Escape cancels the inline dev-command editor
@@ -1610,14 +1490,6 @@ function initInteractions(){
   viewEl.addEventListener("mouseout", (e) => {
     const nm = e.target.closest(".wtp-bname");
     if(nm && (!e.relatedTarget || !nm.contains(e.relatedTarget))) hideBnameTip();
-  });
-
-  // view-mode links are anchors; the All/Unfinished filter is a stateful toggle
-  $("#topbar").addEventListener("click", (e) => {
-    const f = e.target.closest("[data-filter]");
-    if(!f) return;
-    e.preventDefault();
-    if(state.filter !== f.dataset.filter){ state.filter = f.dataset.filter; refresh(true); }
   });
 
   // project switcher: the rail repo label opens a dropdown of every project in the ledger
@@ -1656,7 +1528,7 @@ async function boot(){
   // morph rendering this forced pass no longer flashes — it just reconciles what actually moved.
   setInterval(() => {
     loadProjects();
-    if(state.view === "inflight" || state.view === "work") refresh(true);
+    if(state.view === "timeline" || state.view === "areas") refresh(true);
   }, 60000);
 }
 

@@ -283,6 +283,143 @@ export async function clusterIntoInitiatives(db, repo, { guidance } = {}) {
   return byName.size;
 }
 
+// ---------------------------------------------------------------------------
+// Reclassify — sort threads into areas + initiatives (the librarian pass)
+// ---------------------------------------------------------------------------
+
+const STALE_MS = 7 * 24 * 60 * 60 * 1000; // "no activity in 7d" → an initiative can close
+
+// Derive an initiative's lifecycle deterministically from its work, NOT from Haiku:
+//   planned — no events logged yet (nothing has happened)
+//   closed  — every issue done (vacuously true when there are none) AND no activity in 7d
+//   active  — anything else (in flight)
+export function inferLifecycle(db, threadId) {
+  const last = db.prepare("SELECT MAX(ts) AS ts FROM events WHERE thread_id = ?").get(threadId).ts;
+  if (!last) return "planned";
+  const issues = S.issuesForThread(db, threadId);
+  const allDone = issues.every((i) => i.status === "done");
+  const stale = Date.now() - new Date(last).getTime() > STALE_MS;
+  return allDone && stale ? "closed" : "active";
+}
+
+// A short gist of a thread for the classifier — its synthesized summary's first sentence (bold
+// stripped), else its genesis, truncated.
+function threadGist(t) {
+  const src = t.summary || t.genesis || "";
+  return src
+    .replace(/\*\*/g, "")
+    .split(/(?<=\.)\s/)[0]
+    .slice(0, 160);
+}
+
+// Ask Haiku to sort the unpinned threads into areas vs initiatives, parent each initiative to an
+// area (reusing the names already in play), and infer a one-line motivation for each. Returns a
+// plan array [{title, kind:'area'|'initiative', area, why}] (empty on any failure).
+function reclassifyPlan(db, repo, unpinned, existingAreas, guidance) {
+  if (!unpinned.length) return [];
+  const list = unpinned
+    .map((t) => {
+      const gist = threadGist(t);
+      return `- "${t.title}" (${t.issue_count || 0} issues, ${t.event_count || 0} events)${gist ? ` — ${gist}` : ""}`;
+    })
+    .join("\n");
+  const areaBlock = existingAreas.length
+    ? `Areas that already exist — reuse these exact names when a thread fits one:\n` +
+      existingAreas.map((a) => `- ${a.title}`).join("\n") +
+      `\n\n`
+    : "";
+  const guide = guidance ? `Grouping guidance from the user — follow it: ${guidance}\n\n` : "";
+  const prompt =
+    `You are the librarian for a developer's work ledger. Each item below is a "thread" — an arc ` +
+    `of work. Sort them into a two-level structure:\n` +
+    `- An AREA is an evergreen domain of ongoing work that is never "done" (e.g. "Dashboard UI", ` +
+    `"Observer & capture", "Developer tooling").\n` +
+    `- An INITIATIVE is a bounded effort that lives inside one area and eventually finishes.\n\n` +
+    `Most threads are initiatives. Create a small number of areas (reuse existing ones) and put ` +
+    `each initiative under exactly one area. For every INITIATIVE, also infer a one-sentence ` +
+    `"why" — the motivation or impact behind it — from its title and gist.\n\n` +
+    guide +
+    areaBlock +
+    `Threads to classify:\n${list}\n\n` +
+    `Return ONLY a JSON array, one object per thread above, using the EXACT titles:\n` +
+    `[{"title":"<thread title>","kind":"area"|"initiative","area":"<area name, or null if kind is area>","why":"<one sentence, or null for areas>"}]`;
+  const out = runHaiku(prompt, repo.root, {
+    timeout: 90000,
+    meter: { db, repoId: repo.id, kind: "cluster" },
+  });
+  if (!out) return [];
+  try {
+    const s = out.indexOf("[");
+    const e = out.lastIndexOf("]");
+    const parsed = JSON.parse(out.slice(s, e + 1));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+// The librarian migration: sort existing threads into areas/initiatives, parent each initiative
+// to an area (creating areas as needed), set lifecycle deterministically, and seed an inferred
+// `why` (source='librarian') — WITHOUT ever moving a hand/agent-pinned placement or overwriting
+// an agent-seeded why. Idempotent: reuses areas by name, recomputes lifecycle from live state.
+// `plan` may be injected (tests) to bypass the Haiku call. Returns { areas, initiatives, moved }.
+export async function reclassifyThreads(db, repo, { guidance, plan } = {}) {
+  if (guidance == null) guidance = S.effectiveConfig(db, repo.slug, "cluster.guidance", null);
+
+  const all = S.listThreads(db, repo.id).filter((t) => t.title);
+  const pinned = all.filter((t) => t.placement_pinned);
+  const unpinned = all.filter((t) => !t.placement_pinned);
+
+  // Areas already in play (pinned or previously librarian-set) seed the reuse set + name cache.
+  const areaCache = new Map();
+  const existingAreas = all.filter((t) => t.kind === "area");
+  for (const a of existingAreas) areaCache.set(a.title, a.id);
+
+  if (!Array.isArray(plan)) plan = reclassifyPlan(db, repo, unpinned, existingAreas, guidance);
+  const byTitle = new Map(plan.map((p) => [String(p.title), p]));
+
+  // Resolve (creating if needed) the area thread for a name, marking it kind='area' unless it's
+  // pinned to something else. Left UNpinned so a later reclassify can still adjust it.
+  const ensureArea = (name) => {
+    if (areaCache.has(name)) return areaCache.get(name);
+    const existing = S.findThreadByTitle(db, repo.id, name);
+    const id = existing ? existing.id : S.createThread(db, repo.id, { title: name });
+    const cur = S.getThread(db, id);
+    if (!cur.placement_pinned) S.setThreadPlacement(db, id, { kind: "area", parentId: null, pinned: false });
+    areaCache.set(name, id);
+    return id;
+  };
+
+  let moved = 0;
+  // Unpinned threads follow the plan.
+  for (const t of unpinned) {
+    const p = byTitle.get(t.title);
+    if (!p) continue; // Haiku omitted it — leave as-is.
+    if (p.kind === "area") {
+      S.setThreadPlacement(db, t.id, { kind: "area", parentId: null, pinned: false });
+      areaCache.set(t.title, t.id);
+      moved++;
+      continue;
+    }
+    // An initiative: parent it to its (created-if-missing) area, set lifecycle, seed why.
+    const areaId = p.area ? ensureArea(String(p.area)) : null;
+    S.setThreadPlacement(db, t.id, { kind: "initiative", parentId: areaId, pinned: false });
+    S.setThreadLifecycle(db, t.id, inferLifecycle(db, t.id));
+    if (p.why && S.whySource(db, t.id) !== "agent") {
+      S.setThreadNarrative(db, t.id, { why: String(p.why), source: "librarian" });
+    }
+    moved++;
+  }
+
+  // Pinned threads keep their placement + why untouched, but still get a lifecycle if they're an
+  // initiative missing one (so the migration leaves nothing un-lifecycled).
+  for (const t of pinned) {
+    if (t.kind === "initiative" && !t.lifecycle) S.setThreadLifecycle(db, t.id, inferLifecycle(db, t.id));
+  }
+
+  return { areas: areaCache.size, initiatives: moved, moved };
+}
+
 // Roll up a thread's issue lifecycle into a status summary for the UI.
 export function threadWorkStatus(db, threadId) {
   const issues = S.issuesForThread(db, threadId);
