@@ -695,6 +695,9 @@ a.ref:hover .k{ color:var(--ink-mute); }
   border-radius:11px; background:var(--bg-1); }
 .wtp-brow:first-child{ margin-top:0; }
 .wtp-brow.live{ border-color:color-mix(in srgb, var(--t-built) 30%, var(--line-strong)); }
+/* Preview's card outline is amber (--t-decided), not the green .live gets — themed to match its
+   always-amber pill and status link (see wtpSlotPill / previewStatusHtml). */
+.wtp-brow.preview{ border-color:color-mix(in srgb, var(--t-decided) 30%, var(--line-strong)); }
 .wtp-brow-top{ display:flex; align-items:center; gap:6px; }
 .wtp-brow-run{ margin-top:9px; }
 /* the name grows to fill whatever room the diverge chip + worktree column don't need, rather
@@ -719,7 +722,6 @@ a.ref:hover .k{ color:var(--ink-mute); }
 .wtp-pill-txt{ min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .wtp-pill:hover, .wtp-pill.on{ background:var(--bg-hi); border-color:var(--ink-whisper); }
 .wtp-pill-dot{ flex:none; width:5px; height:5px; border-radius:50%; background:currentColor; }
-.wtp-pill-dot.live{ background:var(--t-built); }
 .wtp-pill-cv{ flex:none; color:var(--ink-mute); font-size:9px; margin-left:1px; }
 .wtp-pill.ghost{ color:var(--ink-mute); border:1px dashed var(--line-strong); background:none; }
 .wtp-pill.ghost:hover, .wtp-pill.ghost.on{ color:var(--ink-dim); border-color:var(--ink-whisper);

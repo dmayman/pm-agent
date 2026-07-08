@@ -908,9 +908,10 @@ function servicesControl(wt, runOpen){
   if(wt.servicesDeclared){
     const rows = wt.services.map((s) => serviceRow(wt, s)).join("");
     const anyUp = wt.services.some((s) => s.state === "live" || s.state === "starting");
+    const allUp = wt.services.every((s) => s.state === "live" || s.state === "starting");
     const busyAll = state.wt.busy.has("svcall:" + wt.path);
-    let foot = `<div class="wtp-svc-foot">`
-      + `<button class="wtp-btn wtp-svc-all run" data-act="svc-start-all" data-wt="${esc(wt.path)}" ${busyAll ? "disabled" : ""}>${icon("play")}<span>Start all</span></button>`;
+    let foot = `<div class="wtp-svc-foot">`;
+    if(!allUp) foot += `<button class="wtp-btn wtp-svc-all run" data-act="svc-start-all" data-wt="${esc(wt.path)}" ${busyAll ? "disabled" : ""}>${icon("play")}<span>Start all</span></button>`;
     if(anyUp) foot += `<button class="wtp-btn stop wtp-svc-all" data-act="svc-stop-all" data-wt="${esc(wt.path)}" ${busyAll ? "disabled" : ""}>Stop all</button>`;
     foot += `</div>`;
     return `<div class="wtp-svcs">${rows}${foot}</div>`;
@@ -924,10 +925,9 @@ function servicesControl(wt, runOpen){
 // a worktree is checked out. Click it to open the same picker as the ghost "+ worktree" button.
 function wtPill(b, wt, menuOpen){
   const on = menuOpen ? " on" : "";
-  const live = wtIsLive(wt) ? " live" : "";
   return `<button class="wtp-pill wtp-trigger${on}" data-act="wtmenu" data-branch="${esc(b.name)}" `
     + `title="checked out in ${esc(wt.path)} — click to change">`
-    + `<span class="wtp-pill-dot${live}"></span><span class="wtp-pill-txt">${esc(wtLabel(wt))}</span>`
+    + `<span class="wtp-pill-txt">${esc(wtLabel(wt))}</span>`
     + `<span class="wtp-pill-cv">${icon("chevronDown")}</span></button>`;
 }
 
@@ -1039,26 +1039,49 @@ function previewStatusHtml(){
   return "";
 }
 
+// Primary's services, read-only: a status dot, name, and port — no open-link, no start/stop.
+// Unlike every other row in this panel, Primary's declared services can include the dashboard's
+// own process (pm-agent's "Observer"), and there's no sensible interactive control for that:
+// "stop" would kill the very page serving this button, and "open" is redundant since you're
+// already looking at it. So Primary always gets status-only rows, regardless of what's declared.
+function primaryServicesHtml(wt){
+  if(wt.servicesError){
+    return `<div class="wtp-err"><span class="wtp-err-msg">${esc(wt.servicesError)}</span></div>`;
+  }
+  if(wt.servicesDeclared){
+    const rows = wt.services.map((s) => `<div class="wtp-svc ${esc(s.state)}">`
+      + `<span class="wtp-svc-dot ${esc(s.state)}"></span>`
+      + `<span class="wtp-svc-name" title="${esc(s.name)}">${esc(s.name)}</span>`
+      + (s.port ? `<span class="wtp-svc-port">:${esc(s.port)}</span>` : "")
+      + `</div>`).join("");
+    return `<div class="wtp-svcs">${rows}</div>`;
+  }
+  return `<div class="wtp-svc-nudge">No services declared — ask Claude to set up <code>.pm/services.json</code> (or run <code>/pm:services</code>).</div>`;
+}
+
 // The restricted-mode branch row: same shell as wtpBranchRow (name, diverge chip, fixed-width
 // indicator, optional second line) — but the indicator/second-line content comes from the
 // Primary/Preview slot machinery above instead of real per-branch worktrees, except for the
-// default branch, which still shows its actual Run/dev-server controls when it's genuinely checked
-// out in a worktree (the primary checkout normally always is).
+// default branch, which still shows its own status.
 function wtpBranchRowSlotted(b, worktrees, baseName){
   const w = state.wt;
   const menuOpen = !b.isDefault && w.openMenu && w.openMenu.type === "checkout" && w.openMenu.branch === b.name;
-  const primaryWt = b.isDefault && b.worktreePath ? worktrees.find((x) => x.path === b.worktreePath) : null;
+  // Primary is a fixed PLACE — the repo's own root checkout — not "whichever worktree happens to
+  // currently have main checked out". Its branch can legitimately drift during dev work (as it is
+  // right now, mid-feature-branch), so match by isMain rather than by branch/worktreePath — the
+  // declared services live in that directory and run independent of which branch it's on.
+  const primaryWt = b.isDefault ? worktrees.find((x) => x.isMain) : null;
   const holdsPreview = !b.isDefault && state.wt.preview.branch === b.name;
-  const live = !!(primaryWt && wtIsLive(primaryWt)) || (holdsPreview && state.wt.preview.status === "ready");
+  const isLive = !!(primaryWt && wtIsLive(primaryWt));
   const nm = `<span class="wtp-bname"><span class="k">${icon("branch")}</span><span class="wtp-bname-txt">${esc(b.name)}</span>`
     + (b.isDefault ? `<span class="wtp-def">default</span>` : "") + `</span>`;
 
-  let h = `<div class="wtp-brow${live ? " live" : ""}">`;
+  // Preview's card outline is amber, not the green a real live worktree gets — matching the pill
+  // and status link, which are always amber regardless of launching/ready state (see wtpSlotPill).
+  let h = `<div class="wtp-brow${isLive ? " live" : ""}${holdsPreview ? " preview" : ""}">`;
   h += `<div class="wtp-brow-top">${nm}${divergeChip(b.ahead, baseName)}${wtpSlotPill(b, baseName, menuOpen)}</div>`;
   if(primaryWt){
-    const runOpen = !!(w.openMenu && w.openMenu.type === "run" && w.openMenu.wt === primaryWt.path);
-    h += `<div class="wtp-brow-run">${servicesControl(primaryWt, runOpen)}</div>`;
-    if(runOpen && !primaryWt.servicesDeclared) h += runMenuHtml(primaryWt);
+    h += `<div class="wtp-brow-run">${primaryServicesHtml(primaryWt)}</div>`;
   }else if(holdsPreview){
     const status = previewStatusHtml();
     if(status) h += `<div class="wtp-brow-run">${status}</div>`;
