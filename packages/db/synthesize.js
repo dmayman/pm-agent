@@ -185,13 +185,15 @@ function buildThreadPrompt(db, repo, threadId) {
 // Synthesize one Update's summary: a 1-2 sentence WHY + what came out of it (NOT a play-by-play
 // — the expanded event list carries the blow-by-blow). No-op on a sealed update (frozen) or one
 // with no events, and skipped when the summary already reflects the current event count.
-export function synthesizeUpdate(db, repo, updateId) {
+// Build the Haiku prompt + freshness signal for one Update, or null when there's nothing to do
+// (sealed, empty, or already current). Shared by the sync and batch synthesizers.
+function buildUpdatePrompt(db, updateId) {
   const update = S.getUpdate(db, updateId);
-  if (!update || update.sealed) return false;
+  if (!update || update.sealed) return null;
   const events = S.eventsForUpdate(db, updateId);
-  if (!events.length) return false;
+  if (!events.length) return null;
   const signal = events.length;
-  if (update.summary && update.signal === signal) return false; // already current
+  if (update.summary && update.signal === signal) return null; // already current
 
   const thread = update.thread_id ? S.getThread(db, update.thread_id) : null;
   const heading = thread ? `${thread.kind === "area" ? "Area" : "Initiative"}: ${thread.title}` : "";
@@ -209,13 +211,41 @@ export function synthesizeUpdate(db, repo, updateId) {
     why +
     `\nWhat happened in this burst (chronological):\n${log}\n\n` +
     `Return ONLY the caption. No preamble, no surrounding quotes.`;
+  return { prompt, signal };
+}
 
-  const out = runHaiku(prompt, repo.root, { meter: { db, repoId: repo.id, kind: "synthesis" } });
+// Synthesize one Update's summary: a 1-2 sentence WHY + what came out of it (NOT a play-by-play
+// — the expanded event list carries the blow-by-blow). No-op on a sealed/empty/current update.
+export function synthesizeUpdate(db, repo, updateId) {
+  const built = buildUpdatePrompt(db, updateId);
+  if (!built) return false;
+  const out = runHaiku(built.prompt, repo.root, { meter: { db, repoId: repo.id, kind: "synthesis" } });
   if (!out) return false;
   const summary = out.trim().replace(/^["']+|["']+$/g, "");
   if (!summary) return false;
-  S.setUpdateSummary(db, updateId, summary, signal);
+  S.setUpdateSummary(db, updateId, summary, built.signal);
   return true;
+}
+
+// Synthesize many Updates concurrently (the migration backfill). Runs the Haiku calls through a
+// bounded pool so a repo's worth of historical clusters caption quickly. Returns the count written.
+export async function synthesizeUpdatesBatch(db, repo, updateIds, { concurrency = 6, onProgress = null } = {}) {
+  const targets = [];
+  for (const id of updateIds) {
+    const built = buildUpdatePrompt(db, id);
+    if (built) targets.push({ id, ...built });
+  }
+  let n = 0;
+  await pool(targets, concurrency, async (t) => {
+    const out = await runHaikuAsync(t.prompt, repo.root, { meter: { db, repoId: repo.id, kind: "synthesis" } });
+    if (!out) return;
+    const summary = out.trim().replace(/^["']+|["']+$/g, "");
+    if (!summary) return;
+    S.setUpdateSummary(db, t.id, summary, t.signal);
+    n++;
+    if (onProgress) onProgress(n);
+  });
+  return n;
 }
 
 function storeSummary(db, threadId, out, signal) {
