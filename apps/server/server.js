@@ -76,7 +76,7 @@ function previewInfo() {
     };
   }
   const j = livePreview();
-  return j ? { self: false, link: { url: j.url, branch: j.branch, port: j.port } } : null;
+  return j ? { self: false, link: { url: j.url, branch: j.branch, port: j.port, lastSyncedAt: j.lastSyncedAt || null } } : null;
 }
 
 // The rendezvous the `preview` command drops in the real home, but only if its process is alive.
@@ -116,7 +116,7 @@ async function previewState() {
   const lp = livePreview();
   if (!lp) return { running: false };
   const ready = await pingPreview(lp.port);
-  return { running: true, ready, branch: lp.branch, url: lp.url, port: lp.port };
+  return { running: true, ready, branch: lp.branch, url: lp.url, port: lp.port, lastSyncedAt: lp.lastSyncedAt || null };
 }
 
 function sendJson(res, status, obj) {
@@ -327,6 +327,26 @@ async function writeApi(db, repo, url, body, serverPort) {
     });
     child.unref();
     return { ok: true, branch: target };
+  }
+
+  // Resync the running preview's scratch DB from prod, on demand — the "Resync" button. Reseeding
+  // means relaunching the preview with `--reseed` on ITS OWN branch and port (the preview server
+  // holds the scratch SQLite open, so we stop + re-copy + respawn rather than overwrite underneath
+  // it). Everything — branch, port, the file paths that get copied — is resolved server-side from
+  // the rendezvous; the request body carries nothing, so a hostile POST can't redirect the copy.
+  if (p === "/api/preview/reseed") {
+    const lp = livePreview();
+    if (!lp) return { __status: 409, error: "no preview is running" };
+    const cli = path.join(repo.root, "bin", "pm-agent.js");
+    if (!existsSync(cli)) return { __status: 400, error: "not a pm-agent checkout" };
+    const child = spawn(process.execPath, [cli, "preview", lp.branch, "--reseed", "--port", String(lp.port)], {
+      cwd: repo.root,
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env },
+    });
+    child.unref();
+    return { ok: true, branch: lp.branch };
   }
 
   if (p === "/api/worktree/create") {

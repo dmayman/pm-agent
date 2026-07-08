@@ -51,7 +51,9 @@ LOCAL-DEV COMMANDS
   preview            Launch a throwaway PREVIEW dashboard for THIS checkout's
                        branch, on its own port, against a scratch copy of your
                        real ledger — verify a change before merging without
-                       touching your live observer. --stop | --fresh | --port N
+                       touching your live observer. The scratch DB is seeded
+                       once, then kept across relaunches; resync it from prod on
+                       demand. --stop | --fresh | --reseed | --port N
   validate [path]    Validate the marketplace + plugin manifests (--strict)
   release <level>    Cut a release: bump (patch|minor|major), tag, push, publish
                        to npm. Run from the repo (or pass its path).
@@ -655,10 +657,13 @@ function stopPreview({ quiet = false } = {}) {
 }
 
 // Spin up a PREVIEW dashboard: a second observer serving THIS checkout's code (the branch under
-// test) on its own port, against a scratch DB copied fresh from your real ledger — so you can
-// click a link and verify a change before merging, without touching your always-on observer or
-// its data. Idempotent: relaunching restarts + re-seeds. `--stop` tears it down; `--fresh` starts
-// from an empty DB instead of copying prod; `--port N` overrides the port (default 4478).
+// test) on its own port, against a scratch DB copied from your real ledger — so you can click a
+// link and verify a change before merging, without touching your always-on observer or its data.
+// Idempotent: relaunching restarts the server but KEEPS the scratch DB it already seeded (so prod
+// data enters the preview only when you ask, not on every relaunch). `--stop` tears it down;
+// `--fresh` starts from an empty DB; `--reseed` re-copies the ledger from prod on demand;
+// `--port N` overrides the port (default 4478). Each seed/reseed stamps `lastSyncedAt` in the
+// rendezvous so the dashboard can show "Last synced …".
 // Poll until `pid` is gone (or the timeout lapses), so a restart never races the old server for
 // the port. Naps ~80ms per turn via a throwaway node -e (no shell); this path runs briefly.
 function waitForExit(pid, timeoutMs = 4000) {
@@ -692,8 +697,19 @@ function cmdPreview(rest) {
   if (!existsSync(path.join(mainTree, "bin", "pm-agent.js"))) {
     fail("Run `pm-agent preview` from the pm-agent repo checkout you want to preview.");
   }
+
+  // The prior preview's rendezvous, if any — used to carry `lastSyncedAt` forward across a plain
+  // relaunch, to wait out the old server's exit before rebinding, and to let a bare `--reseed`
+  // default to whatever branch is currently previewing.
+  let old = null;
+  try {
+    old = JSON.parse(readFileSync(path.join(home, "preview.json"), "utf8"));
+  } catch {}
+
+  const reseed = rest.includes("--reseed");
   const branch =
     rest.find((a) => !a.startsWith("--")) ||
+    (reseed && old && old.branch) ||
     runLocal("git", ["-C", mainTree, "rev-parse", "--abbrev-ref", "HEAD"], {
       capture: true,
       tolerate: true,
@@ -708,10 +724,6 @@ function cmdPreview(rest) {
     Number((portArg && (portArg.split("=")[1] || rest[rest.indexOf(portArg) + 1])) || 0) || 4478;
 
   // Stop any prior preview and WAIT for it to release the port before we rebind it.
-  let old = null;
-  try {
-    old = JSON.parse(readFileSync(path.join(home, "preview.json"), "utf8"));
-  } catch {}
   stopPreview({ quiet: true });
   if (old && old.pid) waitForExit(old.pid);
 
@@ -730,16 +742,33 @@ function cmdPreview(rest) {
     if (!add.ok) fail(`Couldn't create the preview worktree at ${previewTree}.`);
   }
 
-  // Reset the scratch home and re-seed from prod (unless --fresh).
+  // Seed the scratch home from prod — but only when there's nothing there yet (first launch) or a
+  // reseed was explicitly asked for. A plain relaunch KEEPS the scratch DB it already has, so prod
+  // data lands in the preview on your say-so, not on every restart. `--fresh` forces an empty DB.
+  // `lastSyncedAt` records the last time prod was copied in, and rides forward across relaunches.
   const scratchHome = path.join(home, "preview-home");
-  rmSync(scratchHome, { recursive: true, force: true });
-  mkdirSync(scratchHome, { recursive: true });
   const fresh = rest.includes("--fresh");
-  if (!fresh) {
+  const alreadySeeded = existsSync(path.join(scratchHome, "pm.db"));
+  let lastSyncedAt = old && old.lastSyncedAt ? old.lastSyncedAt : null;
+  let seededNow = false;
+  if (fresh) {
+    // Start over from an empty scratch DB — nothing copied, nothing "synced".
+    rmSync(scratchHome, { recursive: true, force: true });
+    mkdirSync(scratchHome, { recursive: true });
+    lastSyncedAt = null;
+  } else if (reseed || !alreadySeeded) {
+    // First launch (nothing seeded yet) or an explicit resync: (re)copy the ledger from prod.
+    rmSync(scratchHome, { recursive: true, force: true });
+    mkdirSync(scratchHome, { recursive: true });
     for (const suffix of ["", "-wal", "-shm"]) {
       const src = path.join(home, `pm.db${suffix}`);
       if (existsSync(src)) copyFileSync(src, path.join(scratchHome, `pm.db${suffix}`));
     }
+    lastSyncedAt = new Date().toISOString();
+    seededNow = true;
+  } else {
+    // Relaunch of an already-seeded preview: keep its scratch DB exactly as it is.
+    mkdirSync(scratchHome, { recursive: true });
   }
 
   // Detached `serve` from the preview worktree, pointed at the scratch home and flagged as a
@@ -764,14 +793,20 @@ function cmdPreview(rest) {
   const url = `http://localhost:${port}`;
   writeFileSync(
     path.join(home, "preview.json"),
-    JSON.stringify({ url, branch, port, pid: child.pid, tree: previewTree, startedAt: new Date().toISOString() })
+    JSON.stringify({ url, branch, port, pid: child.pid, tree: previewTree, startedAt: new Date().toISOString(), lastSyncedAt })
   );
+  const dbLine = fresh
+    ? "Empty scratch DB"
+    : seededNow
+      ? "Scratch DB synced from your real ledger"
+      : "Scratch DB kept from your last sync";
   process.stdout.write(
     `\n🔬 Preview live  ·  branch ${branch}\n` +
       `  -> ${url}\n\n` +
-      `  ${fresh ? "Empty scratch DB" : "Scratch DB copied from your real ledger"} — changes here never touch prod.\n` +
+      `  ${dbLine} — changes here never touch prod.\n` +
       `  Serving the committed state of ${branch} from a hidden worktree; your real checkout is untouched.\n` +
       `  Switch branches from the preview's amber bar, or:  pm-agent preview <branch>\n` +
+      `  Resync the scratch DB from prod:  pm-agent preview --reseed  (or the dashboard's Resync button)\n` +
       `  Stop it with:  pm-agent preview --stop\n  Logs: ${log}\n`
   );
 }
