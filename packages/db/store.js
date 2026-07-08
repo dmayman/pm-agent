@@ -143,6 +143,24 @@ CREATE TABLE IF NOT EXISTS usage (
   cost_usd              REAL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS usage_repo_ts ON usage(repo_id, ts);
+
+-- Updates: time-bound clusters of events under an initiative (or area). Each is a status
+-- update baked into the timeline. Mutable while it's the initiative's HEAD (events in
+-- flight), then sealed (immutable) once a newer update opens or the initiative closes.
+CREATE TABLE IF NOT EXISTS updates (
+  id         INTEGER PRIMARY KEY,
+  repo_id    INTEGER NOT NULL REFERENCES repos(id),
+  thread_id  INTEGER REFERENCES threads(id),  -- the initiative (usually) or area it belongs to
+  ts_start   TEXT NOT NULL,                    -- first event in the cluster
+  ts_end     TEXT NOT NULL,                    -- latest event in the cluster
+  summary    TEXT,                             -- succinct why + outcome (NOT a play-by-play)
+  sealed     INTEGER NOT NULL DEFAULT 0,       -- 1 = frozen; never resynthesized again
+  signal     INTEGER,                          -- event count the summary was generated from (staleness)
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS updates_repo ON updates(repo_id, ts_end);
+CREATE INDEX IF NOT EXISTS updates_thread ON updates(thread_id);
 `;
 
 // Add a column if an older DB doesn't have it yet (CREATE TABLE IF NOT EXISTS won't alter).
@@ -173,6 +191,17 @@ export function openDb() {
   ensureColumn(db, "issue_titles", "status", "TEXT"); // todo | in_progress | done
   ensureColumn(db, "issue_titles", "thread_id", "INTEGER"); // initiative this issue belongs to
   ensureColumn(db, "issue_titles", "pinned", "INTEGER DEFAULT 0"); // 1 = membership set by hand, don't auto-recluster
+  // Areas/Initiatives/Updates rework. A thread is now either an evergreen `area` or a
+  // bounded `initiative` that lives under an area (parent_id). Existing threads default to
+  // `initiative`; the reclassify migration sorts them into areas + parents afterward.
+  ensureColumn(db, "threads", "kind", "TEXT DEFAULT 'initiative'"); // 'area' | 'initiative'
+  ensureColumn(db, "threads", "parent_id", "INTEGER"); // initiative -> its area; NULL for areas
+  ensureColumn(db, "threads", "description", "TEXT"); // evergreen "what this is" (areas esp.)
+  ensureColumn(db, "threads", "why", "TEXT"); // the motivation/impact — agent-seeded at birth
+  ensureColumn(db, "threads", "why_source", "TEXT"); // 'agent' (high-trust seed) | 'librarian' (inferred)
+  ensureColumn(db, "threads", "lifecycle", "TEXT"); // initiatives: planned | active | closed; NULL for areas
+  ensureColumn(db, "threads", "placement_pinned", "INTEGER DEFAULT 0"); // 1 = kind/parent set by hand/agent, don't auto-move
+  ensureColumn(db, "events", "update_id", "INTEGER"); // the Update cluster this event rolls into
   _db = db;
   return db;
 }
@@ -333,6 +362,160 @@ export function listThreads(db, repoId, { status = null } = {}) {
         ORDER BY COALESCE(last_event_ts, updated_at) DESC`
     )
     .all(...args);
+}
+
+// --- Areas / Initiatives (the two kinds of thread) -------------------------
+
+// Set a thread's kind ('area'|'initiative') and/or its parent area. Marks the placement as
+// pinned when set by hand/agent so the consolidation pass won't auto-move it.
+export function setThreadPlacement(db, id, { kind = null, parentId = undefined, pinned = true } = {}) {
+  const cols = [];
+  const vals = [];
+  if (kind != null) {
+    cols.push("kind = ?");
+    vals.push(kind);
+  }
+  if (parentId !== undefined) {
+    cols.push("parent_id = ?");
+    vals.push(parentId);
+  }
+  if (pinned) cols.push("placement_pinned = 1");
+  if (!cols.length) return;
+  cols.push("updated_at = ?");
+  vals.push(now(), id);
+  db.prepare(`UPDATE threads SET ${cols.join(", ")} WHERE id = ?`).run(...vals);
+}
+
+// Move an initiative through its lifecycle: planned | active | closed. Areas stay NULL.
+export function setThreadLifecycle(db, id, lifecycle) {
+  db.prepare("UPDATE threads SET lifecycle = ?, updated_at = ? WHERE id = ?").run(lifecycle, now(), id);
+}
+
+// Seed/refresh a thread's evergreen description and/or its 'why'. An agent-seeded why is
+// higher-trust: the librarian's inferred why must never overwrite one (guarded by caller via
+// why_source). `source` is 'agent' (seed) or 'librarian' (inferred).
+export function setThreadNarrative(db, id, { description = undefined, why = undefined, source = null } = {}) {
+  const cols = [];
+  const vals = [];
+  if (description !== undefined) {
+    cols.push("description = ?");
+    vals.push(description);
+  }
+  if (why !== undefined) {
+    cols.push("why = ?");
+    vals.push(why);
+    if (source) {
+      cols.push("why_source = ?");
+      vals.push(source);
+    }
+  }
+  if (!cols.length) return;
+  cols.push("updated_at = ?");
+  vals.push(now(), id);
+  db.prepare(`UPDATE threads SET ${cols.join(", ")} WHERE id = ?`).run(...vals);
+}
+
+// The current 'why' trust level for a thread ('agent' beats 'librarian'). Callers writing an
+// inferred why should skip when this returns 'agent'.
+export function whySource(db, id) {
+  const row = db.prepare("SELECT why_source FROM threads WHERE id = ?").get(id);
+  return row ? row.why_source : null;
+}
+
+// Areas (evergreen), newest-active first, each with its initiatives attached.
+export function listAreas(db, repoId) {
+  const areas = db
+    .prepare(
+      `SELECT t.*,
+              (SELECT MAX(ts) FROM events e WHERE e.thread_id = t.id) AS last_event_ts
+         FROM threads t
+        WHERE repo_id = ? AND kind = 'area'
+        ORDER BY COALESCE(last_event_ts, updated_at) DESC`
+    )
+    .all(repoId);
+  for (const a of areas) a.initiatives = listInitiatives(db, repoId, { parentId: a.id });
+  return areas;
+}
+
+// Initiatives (bounded). Optionally scoped to one area; unfinished (planned/active) first.
+export function listInitiatives(db, repoId, { parentId = undefined, lifecycle = null } = {}) {
+  const clauses = ["repo_id = ?", "kind = 'initiative'"];
+  const args = [repoId];
+  if (parentId !== undefined) {
+    clauses.push("parent_id IS ?");
+    args.push(parentId);
+  }
+  if (lifecycle) {
+    clauses.push("lifecycle = ?");
+    args.push(lifecycle);
+  }
+  return db
+    .prepare(
+      `SELECT t.*,
+              (SELECT COUNT(*) FROM events e WHERE e.thread_id = t.id) AS event_count,
+              (SELECT COUNT(*) FROM issue_titles i WHERE i.thread_id = t.id) AS issue_count,
+              (SELECT MAX(ts) FROM events e WHERE e.thread_id = t.id) AS last_event_ts
+         FROM threads t
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY (lifecycle = 'closed'), COALESCE(last_event_ts, updated_at) DESC`
+    )
+    .all(...args);
+}
+
+// ---------------------------------------------------------------------------
+// Updates (time-bound event clusters)
+// ---------------------------------------------------------------------------
+
+// The open (unsealed) head update for a thread, if any — the one new events roll into.
+export function getHeadUpdate(db, threadId) {
+  return (
+    db
+      .prepare("SELECT * FROM updates WHERE thread_id = ? AND sealed = 0 ORDER BY ts_end DESC LIMIT 1")
+      .get(threadId) || null
+  );
+}
+
+export function createUpdate(db, repoId, { threadId, tsStart, tsEnd, summary = null, signal = null }) {
+  const t = now();
+  const r = db
+    .prepare(
+      `INSERT INTO updates (repo_id, thread_id, ts_start, ts_end, summary, signal, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(repoId, threadId, tsStart, tsEnd || tsStart, summary, signal, t, t);
+  return Number(r.lastInsertRowid);
+}
+
+// Roll an event into an update: stamp events.update_id and extend the update's window.
+export function addEventToUpdate(db, updateId, eventId, ts) {
+  db.prepare("UPDATE events SET update_id = ? WHERE id = ?").run(updateId, eventId);
+  db.prepare(
+    `UPDATE updates SET ts_start = MIN(ts_start, ?), ts_end = MAX(ts_end, ?), updated_at = ? WHERE id = ?`
+  ).run(ts, ts, now(), updateId);
+}
+
+export function setUpdateSummary(db, id, summary, signal) {
+  db.prepare("UPDATE updates SET summary = ?, signal = ?, updated_at = ? WHERE id = ?").run(
+    summary,
+    signal,
+    now(),
+    id
+  );
+}
+
+// Seal an update so it's frozen in time — no more resynthesis.
+export function sealUpdate(db, id) {
+  db.prepare("UPDATE updates SET sealed = 1, updated_at = ? WHERE id = ?").run(now(), id);
+}
+
+// All updates for a thread (its story), newest first, with their event count.
+export function listUpdates(db, threadId) {
+  return db
+    .prepare(
+      `SELECT u.*, (SELECT COUNT(*) FROM events e WHERE e.update_id = u.id) AS event_count
+         FROM updates u WHERE thread_id = ? ORDER BY ts_end DESC`
+    )
+    .all(threadId);
 }
 
 // ---------------------------------------------------------------------------
