@@ -393,12 +393,13 @@ function cmdSetupIssues() {
   if (!runLocal("gh", ["auth", "status"], { capture: true, tolerate: true }).ok) {
     fail("`gh` not found or not authenticated. Install the GitHub CLI and run `gh auth login`, then retry.");
   }
-  const view = runLocal("gh", ["repo", "view", "--json", "nameWithOwner,hasIssuesEnabled"], {
-    capture: true,
-    tolerate: true,
-  });
+  const view = runLocal(
+    "gh",
+    ["repo", "view", "--json", "nameWithOwner,hasIssuesEnabled,deleteBranchOnMerge"],
+    { capture: true, tolerate: true }
+  );
   if (!view.ok) fail("Not inside a GitHub repository gh can resolve (need an `origin` remote).");
-  const { nameWithOwner: slug, hasIssuesEnabled } = JSON.parse(view.stdout);
+  const { nameWithOwner: slug, hasIssuesEnabled, deleteBranchOnMerge } = JSON.parse(view.stdout);
   const top = runLocal("git", ["rev-parse", "--show-toplevel"], { capture: true, tolerate: true });
   if (!top.ok) fail("Not inside a git working tree.");
   const root = top.stdout;
@@ -411,6 +412,15 @@ function cmdSetupIssues() {
   } else {
     runLocal("gh", ["repo", "edit", slug, "--enable-issues"]);
     process.stdout.write("  · enabled Issues\n");
+  }
+
+  // 1b. Auto-delete head branches on merge — otherwise merged PR branches (and
+  // any leftover worktree checkouts of them) just pile up forever.
+  if (deleteBranchOnMerge) {
+    process.stdout.write("  · branch auto-delete-on-merge already enabled\n");
+  } else {
+    runLocal("gh", ["repo", "edit", slug, "--delete-branch-on-merge"]);
+    process.stdout.write("  · enabled auto-delete-on-merge for merged branches\n");
   }
 
   // 2. Workflow labels — `--force` upserts, so re-running just refreshes color/description.
