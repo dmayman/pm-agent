@@ -1073,11 +1073,13 @@ function wtpBranchRowSlotted(b, worktrees, baseName){
   // declared services live in that directory and run independent of which branch it's on.
   const primaryWt = b.isDefault ? worktrees.find((x) => x.isMain) : null;
   const holdsPreview = !b.isDefault && state.wt.preview.branch === b.name;
-  const live = !!(primaryWt && wtIsLive(primaryWt)) || (holdsPreview && state.wt.preview.status === "ready");
+  const isLive = !!(primaryWt && wtIsLive(primaryWt));
   const nm = `<span class="wtp-bname"><span class="k">${icon("branch")}</span><span class="wtp-bname-txt">${esc(b.name)}</span>`
     + (b.isDefault ? `<span class="wtp-def">default</span>` : "") + `</span>`;
 
-  let h = `<div class="wtp-brow${live ? " live" : ""}">`;
+  // Preview's card outline is amber, not the green a real live worktree gets — matching the pill
+  // and status link, which are always amber regardless of launching/ready state (see wtpSlotPill).
+  let h = `<div class="wtp-brow${isLive ? " live" : ""}${holdsPreview ? " preview" : ""}">`;
   h += `<div class="wtp-brow-top">${nm}${divergeChip(b.ahead, baseName)}${wtpSlotPill(b, baseName, menuOpen)}</div>`;
   if(primaryWt){
     h += `<div class="wtp-brow-run">${primaryServicesHtml(primaryWt)}</div>`;
