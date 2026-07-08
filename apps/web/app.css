@@ -641,6 +641,15 @@ a.ref:hover .k{ color:var(--ink-mute); }
   animation:spin .8s linear infinite; }
 @keyframes spin{ to{ transform:rotate(360deg); } }
 
+/* The "open preview" link — amber (--t-decided), not the green a real dev-server's open-link
+   gets, so it visually matches the preview environment's own amber banner. */
+.wtp-open.preview{ color:var(--t-decided);
+  background:color-mix(in srgb, var(--t-decided) 12%, var(--bg-2));
+  border-color:color-mix(in srgb, var(--t-decided) 32%, transparent); }
+.wtp-open.preview:hover{ background:color-mix(in srgb, var(--t-decided) 20%, var(--bg-2)); }
+.wtp-open.preview .arw{ color:var(--t-decided); }
+.wtp-dot.preview{ background:var(--t-decided); box-shadow:0 0 0 0 rgba(214,168,76,0.55); }
+
 /* the per-worktree named-services list (from .pm/services.json) */
 .wtp-svcs{ display:flex; flex-direction:column; gap:3px; }
 .wtp-svc{ display:flex; align-items:center; gap:7px; padding:3px 2px; min-width:0; }
@@ -713,6 +722,20 @@ a.ref:hover .k{ color:var(--ink-mute); }
 .wtp-pill.ghost{ color:var(--ink-mute); border:1px dashed var(--line-strong); background:none; }
 .wtp-pill.ghost:hover, .wtp-pill.ghost.on{ color:var(--ink-dim); border-color:var(--ink-whisper);
   background:var(--bg-1); }
+
+/* Primary/Preview slots (opt-in, .pm/config.json worktreePanel:"primary-preview") — the same
+   indicator pill as above, but non-interactive: Primary can't be reassigned, and the Preview slot
+   is reassigned from a DIFFERENT branch's picker, not from its own pill. */
+.wtp-pill.static{ cursor:default; }
+.wtp-pill.static:hover{ background:var(--bg-2); border-color:var(--line-strong); }
+/* The Preview slot's pill is always amber (the same token as the preview environment's own
+   banner, --t-decided) — launching or ready, it never earns the green a real live dev-server
+   pill gets, so at a glance it reads as "opens a scratch preview", not "live infra". */
+.wtp-pill.preview{ border-color:color-mix(in srgb, var(--t-decided) 32%, var(--line-strong)); }
+.wtp-pill-dot.preview{ background:var(--t-decided); }
+.wtp-pill.preview.starting .wtp-pill-dot{ box-shadow:0 0 0 0 rgba(214,168,76,0.5); animation:pulse 1.3s ease-out infinite; }
+.wtp-menu-opt:disabled{ opacity:0.45; cursor:default; }
+.wtp-menu-opt:disabled:hover{ background:none; }
 
 .wtp-menu{ position:fixed; top:0; left:0; z-index:60; min-width:260px; max-width:360px;
   padding:5px; border-radius:10px; background:var(--bg-2); border:1px solid var(--line-strong);

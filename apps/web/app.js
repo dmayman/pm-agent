@@ -212,7 +212,11 @@ const state = {
   primed: false,           // first render done -> flashing enabled
   sig: "",                 // last-rendered signature per view
   // worktrees panel (right rail on Work)
-  wt: { openMenu:null, editCmd:null, error:null, mergedOpen:false, busy:new Set() },
+  wt: {
+    openMenu:null, editCmd:null, error:null, mergedOpen:false, busy:new Set(),
+    // the ONE preview slot, for repos opted into the restricted Primary/Preview layout (below).
+    preview: { branch:null, status:"idle", url:null, error:null, pollTimer:null, hydrated:false },
+  },
   wtData: null,            // last /api/worktrees payload (for no-network repaints)
   wtSig: "",               // last-rendered panel signature
 };
@@ -972,15 +976,116 @@ function wtpBranchRow(b, worktrees, baseName){
   return h + `</div>`;
 }
 
+// ---- Primary/Preview slots (opt-in restricted mode) -------------------------
+// Opt-in via a checked-in `.pm/config.json` ({"worktreePanel":"primary-preview"}), surfaced on the
+// /api/worktrees payload as `worktreePanel`. Repos without the flag are entirely unaffected — the
+// panel's SHAPE never changes (still one column of branch cards, same wtpBranchRow for everyone
+// else); only the per-branch "+ worktree" picker's CONTENTS do. Instead of "every real worktree +
+// new worktree", each branch offers two fixed slots: Primary (valid only for the default branch —
+// disabled everywhere else) and Preview (valid on any branch; picking it launches/re-points the
+// existing preview environment at that branch immediately). This fits pm-agent's own convention:
+// main stays checked out and clean in the primary checkout, and verifying other branches goes
+// through the disposable preview server (#15/#16), never a checkout switch.
+
+// The restricted picker menu: Primary (always disabled here — this menu only ever renders on a
+// non-default row, since the default branch's row shows its pinned pill instead, never a picker)
+// and Preview (always selectable; picking it launches right away).
+function wtpSlotMenu(branch, baseName){
+  return `<div class="wtp-menu">`
+    + `<button class="wtp-menu-opt" disabled title="Primary is pinned to ${esc(baseName || "the default branch")}">`
+    +   `<span class="wtp-menu-name">Primary</span><span class="wtp-menu-cur">pinned</span></button>`
+    + `<button class="wtp-menu-opt" data-act="previewassign" data-branch="${esc(branch)}">`
+    +   `<span class="wtp-menu-name">Preview</span><span class="wtp-menu-cur">launch here</span></button>`
+    + `</div>`;
+}
+
+// The first-line indicator column, restricted-mode version: a static "Primary" pill on the default
+// branch (nothing to click — it can't move), a static "Preview" pill on whichever branch currently
+// holds that slot (tracking its launch state), or the same ghost "+ worktree" trigger the generic
+// panel uses elsewhere — just opening wtpSlotMenu instead of wtpWtMenu.
+function wtpSlotPill(b, baseName, menuOpen){
+  if(b.isDefault){
+    return `<span class="wtp-pill static" title="permanently pinned to ${esc(baseName || b.name)}">`
+      + `<span class="wtp-pill-txt">Primary</span></span>`;
+  }
+  const p = state.wt.preview;
+  if(p.branch === b.name){
+    const starting = p.status === "launching";
+    // Always amber, matching the preview environment's own banner — never the green "live" a real
+    // dev-server gets, so this pill reads as "opens a scratch preview" at a glance, not "live infra".
+    return `<span class="wtp-pill static preview${starting ? " starting" : ""}" title="preview slot">`
+      + `<span class="wtp-pill-dot preview"></span><span class="wtp-pill-txt">Preview</span></span>`;
+  }
+  return wtGhostBtn(b.name, menuOpen);
+}
+
+// The second line for whichever branch currently holds Preview: a spinner while it (re)launches, a
+// live link once /api/preview/state confirms it's up, or the error from a failed launch — the same
+// spot/style a real worktree's Run controls would occupy, just reporting the preview server's
+// state instead of a per-worktree dev server's.
+function previewStatusHtml(){
+  const p = state.wt.preview;
+  if(p.status === "launching"){
+    return `<div class="wtp-run starting"><span class="wtp-spin"></span>`
+      + `<span class="wtp-starting">launching preview…</span></div>`;
+  }
+  if(p.status === "ready" && p.url){
+    return `<div class="wtp-run preview"><a class="wtp-open preview" href="${esc(p.url)}" target="_blank" rel="noopener">`
+      + `<span class="wtp-dot preview"></span>open preview<span class="arw preview">${icon("externalLink")}</span></a></div>`;
+  }
+  if(p.status === "error"){
+    return `<div class="wtp-err"><span class="wtp-err-msg">${esc(p.error || "couldn't launch preview")}</span></div>`;
+  }
+  return "";
+}
+
+// The restricted-mode branch row: same shell as wtpBranchRow (name, diverge chip, fixed-width
+// indicator, optional second line) — but the indicator/second-line content comes from the
+// Primary/Preview slot machinery above instead of real per-branch worktrees, except for the
+// default branch, which still shows its actual Run/dev-server controls when it's genuinely checked
+// out in a worktree (the primary checkout normally always is).
+function wtpBranchRowSlotted(b, worktrees, baseName){
+  const w = state.wt;
+  const menuOpen = !b.isDefault && w.openMenu && w.openMenu.type === "checkout" && w.openMenu.branch === b.name;
+  const primaryWt = b.isDefault && b.worktreePath ? worktrees.find((x) => x.path === b.worktreePath) : null;
+  const holdsPreview = !b.isDefault && state.wt.preview.branch === b.name;
+  const live = !!(primaryWt && wtIsLive(primaryWt)) || (holdsPreview && state.wt.preview.status === "ready");
+  const nm = `<span class="wtp-bname"><span class="k">${icon("branch")}</span><span class="wtp-bname-txt">${esc(b.name)}</span>`
+    + (b.isDefault ? `<span class="wtp-def">default</span>` : "") + `</span>`;
+
+  let h = `<div class="wtp-brow${live ? " live" : ""}">`;
+  h += `<div class="wtp-brow-top">${nm}${divergeChip(b.ahead, baseName)}${wtpSlotPill(b, baseName, menuOpen)}</div>`;
+  if(primaryWt){
+    const runOpen = !!(w.openMenu && w.openMenu.type === "run" && w.openMenu.wt === primaryWt.path);
+    h += `<div class="wtp-brow-run">${servicesControl(primaryWt, runOpen)}</div>`;
+    if(runOpen && !primaryWt.servicesDeclared) h += runMenuHtml(primaryWt);
+  }else if(holdsPreview){
+    const status = previewStatusHtml();
+    if(status) h += `<div class="wtp-brow-run">${status}</div>`;
+  }
+  if(menuOpen) h += wtpSlotMenu(b.name, baseName);
+  return h + `</div>`;
+}
+
 function panelHtml(worktrees, branches, data){
   const w = state.wt;
+  const restricted = data && data.worktreePanel === "primary-preview";
+  const baseName = data && data.defaultBranch;
   // the default branch is always the orientation point — pin it first regardless of recency.
   const ordered = branches.slice().sort((a, b) => (a.isDefault ? 0 : 1) - (b.isDefault ? 0 : 1));
-  const closed = ordered.filter((b) => b.merged && !b.worktreePath && !b.isDefault);
+  const closed = ordered.filter((b) => {
+    if(b.isDefault || !b.merged) return false;
+    // in restricted mode a real worktree isn't what keeps a branch "open" — holding the Preview
+    // slot is, so a merged branch that's actively previewing stays visible instead of collapsing.
+    return restricted ? state.wt.preview.branch !== b.name : !b.worktreePath;
+  });
   const closedSet = new Set(closed);
   const active = ordered.filter((b) => !closedSet.has(b));
-  const liveCount = worktrees.reduce((n, x) => n + wtLiveCount(x), 0);
-  const baseName = data && data.defaultBranch;
+  const liveCount = restricted
+    ? (worktrees.some((x) => baseName && x.branch === baseName && wtIsLive(x)) ? 1 : 0)
+      + (state.wt.preview.status === "ready" ? 1 : 0)
+    : worktrees.reduce((n, x) => n + wtLiveCount(x), 0);
+  const row = restricted ? wtpBranchRowSlotted : wtpBranchRow;
 
   let h = `<div class="wtp">`;
   h += `<div class="wtp-head"><span class="wtp-title">Branches</span>`
@@ -988,11 +1093,11 @@ function panelHtml(worktrees, branches, data){
   if(w.error) h += `<div class="wtp-err"><span class="wtp-err-msg">${esc(w.error)}</span><button class="wtp-x" data-act="dismiss" aria-label="dismiss">${icon("x")}</button></div>`;
   if(data && !data.serverScanned) h += `<div class="wtp-note">dev-server scan unavailable (lsof)</div>`;
 
-  h += active.map((b) => wtpBranchRow(b, worktrees, baseName)).join("") || `<div class="wtp-empty">no branches</div>`;
+  h += active.map((b) => row(b, worktrees, baseName)).join("") || `<div class="wtp-empty">no branches</div>`;
   if(closed.length){
     h += `<button class="wtp-merged-toggle" data-act="togglemerged" aria-expanded="${w.mergedOpen}">`
       + `<span class="chev">${icon(w.mergedOpen ? "chevronDown" : "chevronRight")}</span> Merged <span class="wtp-sub">${closed.length}</span></button>`;
-    if(w.mergedOpen) h += `<div class="wtp-merged">${closed.map((b) => wtpBranchRow(b, worktrees, baseName)).join("")}</div>`;
+    if(w.mergedOpen) h += `<div class="wtp-merged">${closed.map((b) => row(b, worktrees, baseName)).join("")}</div>`;
   }
   h += `</div>`;
   return h;
@@ -1069,7 +1174,16 @@ async function renderWorktreePanel(force){
 
   const worktrees = data.worktrees || [];
   const branches = data.branches || [];
-  state.wtData = { worktrees, branches, serverScanned: data.serverScanned };
+  const worktreePanel = data.worktreePanel || null;
+  state.wtData = { worktrees, branches, serverScanned: data.serverScanned, defaultBranch: data.defaultBranch, worktreePanel };
+
+  // Repos opted into the restricted layout: on first load, adopt whatever preview is already
+  // running (if any) instead of showing an empty "choose a branch…" slot for something that's
+  // actually up. Only once — after that the slot is driven purely by user selection + polling.
+  if(worktreePanel === "primary-preview" && !state.wt.preview.hydrated){
+    state.wt.preview.hydrated = true;
+    hydratePreviewState();
+  }
 
   const w = state.wt;
   const sig = "wtp:" + JSON.stringify({
@@ -1077,12 +1191,73 @@ async function renderWorktreePanel(force){
       x.servicesDeclared, x.servicesError, (x.services || []).map((s) => [s.name, s.state])]),
     b: branches.map((x) => [x.name, x.worktreePath, x.merged, x.ahead, x.committedAt]),
     ui: [w.openMenu, w.editCmd, w.error, w.mergedOpen, [...w.busy]],
+    p: worktreePanel,
   });
   if(!force && sig === state.wtSig) return;
   hideBnameTip(); // the hovered element is about to be thrown away — don't leave its tip stuck
   aside.innerHTML = panelHtml(worktrees, branches, data);
   if(state.wt.openMenu) positionWtMenu();
   state.wtSig = sig;
+}
+
+// ---- Preview slot: launch + poll --------------------------------------------
+
+// Ask the PRIMARY server (not the preview itself — a cross-origin browser fetch to the preview's
+// port would just get CORS-blocked) whether a preview is running and, if so, whether its HTTP
+// server has actually come up yet.
+async function fetchPreviewState(){
+  try{ return await fetch("/api/preview/state", { cache:"no-store" }).then((r) => r.json()); }
+  catch(e){ return null; }
+}
+
+// One-time adoption of whatever preview is already live when the panel first mounts.
+async function hydratePreviewState(){
+  const st = await fetchPreviewState();
+  if(!st || !st.running) return;
+  const p = state.wt.preview;
+  p.branch = st.branch || null;
+  p.status = st.ready ? "ready" : "launching";
+  p.url = st.ready ? st.url : null;
+  repaintPanel();
+  if(!st.ready && p.branch) pollPreviewState(p.branch);
+}
+
+// Poll until `branch`'s preview reports ready, or give up after ~60s. `branch` is captured at call
+// time (not re-read from state.wt.preview inside the async callback) so that if the user picks a
+// DIFFERENT branch while a fetch is already in flight, the stale response is recognized as
+// superseded and discarded instead of clobbering the newer selection's state.
+function pollPreviewState(branch, attempt = 0){
+  const p = state.wt.preview;
+  if(p.pollTimer) clearTimeout(p.pollTimer);
+  p.pollTimer = setTimeout(async () => {
+    const st = await fetchPreviewState();
+    if(state.wt.preview.branch !== branch) return; // superseded by a newer selection
+    if(st && st.running && st.branch === branch && st.ready){
+      p.status = "ready"; p.url = st.url; p.pollTimer = null;
+      return repaintPanel();
+    }
+    if(attempt >= 60){
+      p.status = "error"; p.error = "preview didn't come up in time"; p.pollTimer = null;
+      return repaintPanel();
+    }
+    pollPreviewState(branch, attempt + 1);
+  }, 1000);
+}
+
+// Selecting a branch in the Preview dropdown launches it immediately — no separate "start" step.
+async function handlePreviewSelect(branch){
+  branch = String(branch || "").trim();
+  if(!branch) return;
+  const p = state.wt.preview;
+  if(p.pollTimer){ clearTimeout(p.pollTimer); p.pollTimer = null; }
+  p.branch = branch; p.status = "launching"; p.url = null; p.error = null;
+  repaintPanel();
+  const r = await apiPost("/api/preview/launch", { branch });
+  if(r && r.ok === false){
+    p.status = "error"; p.error = r.error || "couldn't launch preview";
+    return repaintPanel();
+  }
+  pollPreviewState(branch);
 }
 
 // panel button dispatch (delegated from the Work view click handler)
@@ -1200,6 +1375,12 @@ async function handleWtAction(el){
     const r = await apiPost("/api/worktree/checkout", { worktree: wt, branch });
     w.error = r && r.ok === false ? (r.error || "couldn't move worktree") : null;
     return renderWorktreePanel(true);
+  }
+  if(act === "previewassign"){
+    // restricted-mode picker's "Preview" option — assign this branch to the one Preview slot and
+    // launch it right away (same trigger behavior as before the picker-based redesign).
+    w.openMenu = null;
+    return handlePreviewSelect(branch);
   }
 }
 

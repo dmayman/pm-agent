@@ -153,6 +153,27 @@ export function readServices(worktreePath) {
   return { services, error: null };
 }
 
+// The repo-level opt-in config: `.pm/config.json`, checked in, Claude/human-authored. Read the
+// same defensive way readServices() reads .pm/services.json — tolerate a missing or invalid file
+// (never throws), and never let a request body stand in for it: this is repo config, not
+// something a POST should be able to spoof. Currently the only recognized key is
+// `worktreePanel: "primary-preview"`, which swaps the dashboard's generic per-branch worktree
+// picker for the restricted Primary/Preview layout (see worktreeReport below).
+export function readPmConfig(root) {
+  let raw;
+  try {
+    raw = readFileSync(path.join(root, ".pm", "config.json"), "utf8");
+  } catch {
+    return {}; // absent — not an error, just no config
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {}; // malformed — degrade to defaults rather than throw
+  }
+}
+
 // Enrich one declared service with its live state, from (a) a global scan of listening ports and
 // (b) this process's own registry for services we launched. Port-detected liveness wins; a
 // service we spawned but that hasn't bound its port yet reads as "starting"; a port-less service
@@ -352,7 +373,10 @@ export function worktreeReport(repo, { skipPid, skipPort, devCommand, excludePat
     return String(b.committedAt || "").localeCompare(String(a.committedAt || ""));
   });
 
-  return { defaultBranch: baseName || null, worktrees, branches, serverScanned };
+  const config = readPmConfig(root);
+  const worktreePanel = config.worktreePanel === "primary-preview" ? "primary-preview" : null;
+
+  return { defaultBranch: baseName || null, worktrees, branches, serverScanned, worktreePanel };
 }
 
 // ---- write ops -------------------------------------------------------------
