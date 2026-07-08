@@ -198,19 +198,39 @@ function api(db, repo, url, cwdRepo, serverPort) {
       preview: previewInfo(),
     };
   }
+  // The timeline is now a stream of Update cards (event clusters), newest ts_end first, each
+  // carrying its events inline. `loose` catches events not yet rolled into any update (rare once
+  // clustering has run; the whole ledger until the reclassify/cluster pass lands).
   if (p === "/api/timeline") {
-    let since = q.get("since");
-    if (q.get("days")) {
-      const d = new Date();
-      d.setDate(d.getDate() - Number(q.get("days")));
-      since = d.toISOString();
-    }
-    const threadId = q.get("thread") ? S.resolveThread(db, repo.id, q.get("thread")) : null;
-    return S.listEvents(db, repo.id, {
-      since,
-      threadId,
-      limit: Number(q.get("limit")) || 500,
-    }).map(decodeRefs);
+    const updates = S.listUpdatesForRepo(db, repo.id).map((r) =>
+      shapeUpdate(db, r, {
+        thread_title: r.thread_title,
+        thread_kind: r.thread_kind,
+        lifecycle: r.lifecycle ?? null,
+        area_id: r.area_id ?? null,
+        area_title: r.area_title ?? null,
+      })
+    );
+    const loose = db
+      .prepare(
+        `SELECT id, ts, type, summary, refs FROM events
+          WHERE repo_id = ? AND update_id IS NULL ORDER BY ts DESC LIMIT ?`
+      )
+      .all(repo.id, Number(q.get("limit")) || 500)
+      .map(decodeRefs);
+    return { updates, loose };
+  }
+  if (p === "/api/areas") {
+    return {
+      areas: S.listAreas(db, repo.id).map((a) => ({
+        id: a.id,
+        title: a.title,
+        description: a.description ?? null,
+        summary: a.summary ?? null,
+        last_event_ts: a.last_event_ts ?? null,
+        initiatives: (a.initiatives || []).map(shapeInitiativeSummary),
+      })),
+    };
   }
   if (p === "/api/inflight") {
     return {
@@ -250,6 +270,72 @@ function api(db, repo, url, cwdRepo, serverPort) {
   }
   if (p === "/api/loose") return S.listLooseEnds(db, repo.id).map(decodeRefs);
   if (p === "/api/threads") return S.listThreads(db, repo.id).map((t) => withWork(db, t));
+  // An initiative's story: its stack of Update cards (newest first) + the why + its issues.
+  const mi = p.match(/^\/api\/initiative\/(\d+)$/);
+  if (mi) {
+    const id = Number(mi[1]);
+    const thread = S.getThread(db, id);
+    if (!thread || thread.repo_id !== repo.id) return { __status: 404, error: "no such initiative" };
+    let area_id = null;
+    let area_title = null;
+    if (thread.parent_id) {
+      const a = S.getThread(db, thread.parent_id);
+      if (a) {
+        area_id = a.id;
+        area_title = a.title;
+      }
+    }
+    const ctx = {
+      thread_title: thread.title,
+      thread_kind: thread.kind,
+      lifecycle: thread.lifecycle ?? null,
+      area_id,
+      area_title,
+    };
+    return {
+      initiative: {
+        id: thread.id,
+        title: thread.title,
+        why: thread.why ?? null,
+        description: thread.description ?? null,
+        lifecycle: thread.lifecycle ?? null,
+        area_id,
+        area_title,
+      },
+      updates: S.listUpdates(db, id).map((u) => shapeUpdate(db, u, ctx)),
+      issues: S.issuesForThread(db, id).map((i) => ({
+        number: i.number,
+        title: i.title,
+        status: i.status ?? null,
+        state: i.state ?? null,
+      })),
+    };
+  }
+  // An area's page: its own metadata, its initiatives (as in /api/areas), and any area-level
+  // updates (events clustered directly under the area rather than an initiative).
+  const ma = p.match(/^\/api\/area\/(\d+)$/);
+  if (ma) {
+    const id = Number(ma[1]);
+    const thread = S.getThread(db, id);
+    if (!thread || thread.repo_id !== repo.id) return { __status: 404, error: "no such area" };
+    const ctx = {
+      thread_title: thread.title,
+      thread_kind: thread.kind,
+      lifecycle: thread.lifecycle ?? null,
+      area_id: thread.id,
+      area_title: thread.title,
+    };
+    return {
+      area: {
+        id: thread.id,
+        title: thread.title,
+        description: thread.description ?? null,
+        summary: thread.summary ?? null,
+      },
+      initiatives: S.listInitiatives(db, repo.id, { parentId: id }).map(shapeInitiativeSummary),
+      updates: S.listUpdates(db, id).map((u) => shapeUpdate(db, u, ctx)),
+    };
+  }
   const m = p.match(/^\/api\/thread\/(\d+)$/);
   if (m) {
     const id = Number(m[1]);
@@ -505,6 +591,49 @@ function decodeRefs(e) {
     } catch {}
   }
   return e;
+}
+
+// The lightweight Event shape an Update carries inline: an update's own events, chronological.
+function updateEvents(db, updateId) {
+  return db
+    .prepare("SELECT id, ts, type, summary, refs FROM events WHERE update_id = ? ORDER BY ts ASC")
+    .all(updateId)
+    .map(decodeRefs);
+}
+
+// Shape one raw `updates` row into the API Update object. `ctx` carries the resolved thread/area
+// context (title, kind, lifecycle, area_id, area_title) since the raw row only knows thread_id.
+function shapeUpdate(db, u, ctx) {
+  const events = updateEvents(db, u.id);
+  return {
+    id: u.id,
+    thread_id: u.thread_id,
+    thread_title: ctx.thread_title,
+    thread_kind: ctx.thread_kind,
+    area_id: ctx.area_id,
+    area_title: ctx.area_title,
+    lifecycle: ctx.lifecycle,
+    ts_start: u.ts_start,
+    ts_end: u.ts_end,
+    summary: u.summary ?? null,
+    sealed: !!u.sealed,
+    event_count: events.length,
+    events,
+  };
+}
+
+// The compact initiative shape used inside /api/areas and /api/area/:id (an initiative row from
+// listInitiatives, which already carries event_count/issue_count/last_event_ts).
+function shapeInitiativeSummary(i) {
+  return {
+    id: i.id,
+    title: i.title,
+    why: i.why ?? null,
+    lifecycle: i.lifecycle ?? null,
+    event_count: i.event_count ?? 0,
+    issue_count: i.issue_count ?? 0,
+    last_event_ts: i.last_event_ts ?? null,
+  };
 }
 
 // SQLite's data_version bumps whenever the database file is committed to by *another*

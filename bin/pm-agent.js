@@ -859,6 +859,8 @@ switch (cmd) {
   case "log":
   case "thread":
   case "initiative":
+  case "area":
+  case "reclassify":
   case "timeline":
   case "inflight":
   case "loose":

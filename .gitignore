@@ -13,6 +13,7 @@ build/
 *.db
 apps/server/data/
 .claude/pm-ledger.md
+.claude/worktrees/
 .env
 .env.*
 !.env.example
