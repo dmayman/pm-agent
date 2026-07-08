@@ -707,9 +707,11 @@ a.ref:hover .k{ color:var(--ink-mute); }
   text-transform:uppercase; color:var(--ink-mute); border:1px solid var(--line-strong);
   border-radius:20px; padding:1px 5px; }
 
-/* the worktree/checkout indicator — fixed width so it forms its own column on the first line,
-   whether it's showing a checked-out worktree or the ghost "+ worktree" prompt */
-.wtp-pill{ flex:none; width:88px; display:inline-flex; align-items:center; gap:5px; cursor:pointer;
+/* the worktree/checkout indicator — capped width so it never grows huge, but shrinks to fit
+   short content (e.g. "Primary"); it's the last item in the flex row with the branch name
+   flex-growing before it, so capping (not fixing) the width keeps it flush right regardless
+   of its own content length. */
+.wtp-pill{ flex:none; max-width:88px; display:inline-flex; align-items:center; gap:5px; cursor:pointer;
   font-family:var(--mono); font-size:9.5px; padding:3px 8px; border-radius:20px;
   border:1px solid var(--line-strong); color:var(--ink);
   background:var(--bg-2);
@@ -870,8 +872,11 @@ body.has-envswitch #topbar{ padding-right:170px; }
 .env-cur{ font-weight:700; }
 .env-sub{ opacity:0.7; font-weight:600; }
 .env-caret{ font-size:9px; opacity:0.8; }
-.env-dot{ width:7px; height:7px; border-radius:50%; flex:none; background:#f5b301; }
-.env-prod .env-btn>.env-dot{ background:#3ecf8e; }
+/* Dot/check color is keyed to which environment the option IS (prod=green, preview=amber),
+   never to current-vs-other — so it stays consistent no matter which side you're viewing from. */
+.env-dot{ width:7px; height:7px; border-radius:50%; flex:none; }
+.env-dot.prod{ background:#3ecf8e; }
+.env-dot.preview{ background:#f5b301; }
 .env-menu{
   position:absolute; top:calc(100% + 6px); right:0; min-width:210px;
   padding:5px; border-radius:10px; background:var(--panel,#14161c); border:1px solid var(--line);
@@ -886,8 +891,8 @@ a.env-opt:hover{ background:rgba(245,179,1,0.12); }
 .env-opt.is-current{ color:var(--ink-soft); }
 .env-opt.disabled{ color:var(--ink-whisper); }
 .env-opt-txt{ flex:1; }
-.env-opt .env-dot.alt{ background:#3ecf8e; }
-.env-check{ color:#f5b301; }
+.env-check.prod{ color:#3ecf8e; }
+.env-check.preview{ color:#f5b301; }
 
 /* ---------- preview: "switching branch" overlay ---------- */
 #pvSwitching{

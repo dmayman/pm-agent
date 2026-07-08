@@ -1,0 +1,5 @@
+{
+  "services": [
+    { "name": "Operator UI", "command": "node bin/pm-agent.js serve --port 4477", "cwd": ".", "port": 4477 }
+  ]
+}
