@@ -722,7 +722,6 @@ a.ref:hover .k{ color:var(--ink-mute); }
 .wtp-pill-txt{ min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .wtp-pill:hover, .wtp-pill.on{ background:var(--bg-hi); border-color:var(--ink-whisper); }
 .wtp-pill-dot{ flex:none; width:5px; height:5px; border-radius:50%; background:currentColor; }
-.wtp-pill-dot.live{ background:var(--t-built); }
 .wtp-pill-cv{ flex:none; color:var(--ink-mute); font-size:9px; margin-left:1px; }
 .wtp-pill.ghost{ color:var(--ink-mute); border:1px dashed var(--line-strong); background:none; }
 .wtp-pill.ghost:hover, .wtp-pill.ghost.on{ color:var(--ink-dim); border-color:var(--ink-whisper);

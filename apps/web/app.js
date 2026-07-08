@@ -925,10 +925,9 @@ function servicesControl(wt, runOpen){
 // a worktree is checked out. Click it to open the same picker as the ghost "+ worktree" button.
 function wtPill(b, wt, menuOpen){
   const on = menuOpen ? " on" : "";
-  const live = wtIsLive(wt) ? " live" : "";
   return `<button class="wtp-pill wtp-trigger${on}" data-act="wtmenu" data-branch="${esc(b.name)}" `
     + `title="checked out in ${esc(wt.path)} — click to change">`
-    + `<span class="wtp-pill-dot${live}"></span><span class="wtp-pill-txt">${esc(wtLabel(wt))}</span>`
+    + `<span class="wtp-pill-txt">${esc(wtLabel(wt))}</span>`
     + `<span class="wtp-pill-cv">${icon("chevronDown")}</span></button>`;
 }
 
