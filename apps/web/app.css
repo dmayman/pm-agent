@@ -665,6 +665,30 @@ a.ref:hover .k{ color:var(--ink-mute); }
 .wtp-sync-btn:disabled{ opacity:0.7; cursor:default; }
 .wtp-sync-btn .icon{ width:11px; height:11px; }
 
+/* the capture-link switch: route the hooks (branch code) + capture (scratch DB) onto a preview */
+.wtp-link{ display:flex; align-items:center; gap:8px; margin-top:9px; padding:7px 8px;
+  border-radius:8px; border:1px dashed var(--line);
+  background:color-mix(in srgb, var(--bg-2) 55%, transparent); }
+.wtp-link.on{ border-style:solid;
+  border-color:color-mix(in srgb, var(--t-decided) 34%, transparent);
+  background:color-mix(in srgb, var(--t-decided) 8%, var(--bg-2)); }
+.wtp-link-rows{ flex:1; min-width:0; display:flex; flex-direction:column; gap:4px; }
+.wtp-link-row{ display:flex; align-items:center; gap:7px; min-width:0; }
+.wtp-link-lbl{ font-family:var(--mono); font-size:10px; color:var(--ink-mute);
+  min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.wtp-link.on .wtp-link-lbl{ color:var(--ink); }
+.wtp-link-btn{ flex:none; display:inline-flex; align-items:center; gap:5px;
+  font-family:var(--mono); font-size:10.5px; font-weight:600;
+  padding:4px 10px; border-radius:7px; transition:background .16s; }
+.wtp-link-btn.run{ color:var(--t-decided);
+  background:color-mix(in srgb, var(--t-decided) 10%, var(--bg-2));
+  border:1px solid color-mix(in srgb, var(--t-decided) 32%, transparent); }
+.wtp-link-btn.run:hover:not(:disabled){ background:color-mix(in srgb, var(--t-decided) 20%, var(--bg-2)); }
+.wtp-link-btn.stop{ color:var(--ink-mute); background:var(--bg-2); border:1px solid var(--line); }
+.wtp-link-btn.stop:hover:not(:disabled){ color:var(--ink); border-color:var(--ink-dim); }
+.wtp-link-btn:disabled{ opacity:0.55; cursor:default; }
+.wtp-link-btn .icon{ width:11px; height:11px; }
+
 /* the per-worktree named-services list (from .pm/services.json) */
 .wtp-svcs{ display:flex; flex-direction:column; gap:3px; }
 .wtp-svc{ display:flex; align-items:center; gap:7px; padding:3px 2px; min-width:0; }

@@ -119,6 +119,44 @@ async function previewState() {
   return { running: true, ready, branch: lp.branch, url: lp.url, port: lp.port, lastSyncedAt: lp.lastSyncedAt || null };
 }
 
+// The capture-link status the Work panel shows: whether `pm-agent preview --link` has routed the
+// hooks (and their ledger writes) onto a branch's preview — the code binding (npm link → the
+// preview worktree) and the data binding (capture → the preview's scratch DB). Both files live in
+// the REAL home (never a scratch one), so on the preview server we read PM_AGENT_REAL_HOME.
+function captureLinkState() {
+  const realHome = process.env.PM_AGENT_REAL_HOME || S.pmHome();
+  let link = null;
+  let preview = null;
+  try {
+    link = JSON.parse(readFileSync(path.join(realHome, "capture-link.json"), "utf8"));
+  } catch {}
+  try {
+    preview = JSON.parse(readFileSync(path.join(realHome, "preview.json"), "utf8"));
+  } catch {}
+  const previewLive = preview && preview.pid && pidAlive(preview.pid) ? preview : null;
+  if (!link || !link.home) {
+    return { linked: false, previewBranch: previewLive ? previewLive.branch : null };
+  }
+  const sameBranch = previewLive && previewLive.branch === link.branch;
+  return {
+    linked: true,
+    branch: link.branch || null,
+    linkedAt: link.linkedAt || null,
+    // code binding: the global CLI npm-linked to the preview worktree (branch code in the hooks)
+    cli: {
+      tree: link.tree || null,
+      healthy: !!(link.tree && existsSync(path.join(link.tree, "bin", "pm-agent.js"))),
+    },
+    // data binding: capture routed into the preview's scratch DB
+    db: {
+      home: link.home,
+      present: existsSync(path.join(link.home, "pm.db")),
+      lastSyncedAt: sameBranch ? previewLive.lastSyncedAt || null : link.linkedAt || null,
+    },
+    previewBranch: previewLive ? previewLive.branch : null,
+  };
+}
+
 function sendJson(res, status, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(status, {
@@ -246,6 +284,7 @@ function api(db, repo, url, cwdRepo, serverPort) {
       wt.tracked = tracked;
     }
     report.devCommandOverride = override || null;
+    report.captureLink = captureLinkState();
     return report;
   }
   if (p === "/api/loose") return S.listLooseEnds(db, repo.id).map(decodeRefs);
@@ -347,6 +386,26 @@ async function writeApi(db, repo, url, body, serverPort) {
     });
     child.unref();
     return { ok: true, branch: lp.branch };
+  }
+
+  // Route live capture onto the previewed branch (npm link the preview worktree + point capture at
+  // the preview DB), or revert it. The CLI does the real work (and always targets the live
+  // preview's worktree/home, resolved from the rendezvous — the body carries nothing), so a hostile
+  // POST can't redirect the link. Detached because `npm link`/reinstall take a few seconds; the UI
+  // re-polls /api/worktrees to reflect the new captureLink status.
+  if (p === "/api/preview/link" || p === "/api/preview/unlink") {
+    const cli = path.join(repo.root, "bin", "pm-agent.js");
+    if (!existsSync(cli)) return { __status: 400, error: "not a pm-agent checkout" };
+    if (p === "/api/preview/link" && !livePreview()) return { __status: 409, error: "no preview is running" };
+    const flag = p === "/api/preview/link" ? "--link" : "--unlink";
+    const child = spawn(process.execPath, [cli, "preview", flag], {
+      cwd: repo.root,
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env },
+    });
+    child.unref();
+    return { ok: true };
   }
 
   if (p === "/api/worktree/create") {

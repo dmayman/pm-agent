@@ -710,9 +710,12 @@ function applyCaptureLink() {
   if (link && link.home) process.env.PM_AGENT_HOME = link.home;
 }
 
-// `pm-agent preview --link`: bind the global CLI (what the hooks call) to this checkout's code and
-// route all capture into the live preview's scratch DB. The reusable "move onto the preview env"
-// switch — after this you just work normally in your hooked repos and watch the preview dashboard.
+// `pm-agent preview --link`: bind the global CLI (what the hooks call) to the PREVIEW WORKTREE —
+// which is checked out at the branch-under-test's committed tip — and route all capture into the
+// preview's scratch DB. Linking the preview tree (not your working checkout) means the hooks run
+// the branch's code no matter what your main checkout is on. The reusable "move onto the preview
+// env" switch: after this you just work normally in your hooked repos and watch the preview
+// dashboard. Callable from the dashboard (cwd is the repo, but we always target preview.tree).
 function linkCaptureToPreview() {
   const home = path.join(os.homedir(), ".pm-agent");
   let preview = null;
@@ -721,50 +724,52 @@ function linkCaptureToPreview() {
   } catch {}
   if (!preview) fail("No preview is running. Start one first:  pm-agent preview <branch>");
   const scratchHome = path.join(home, "preview-home");
+  const tree = preview.tree;
+  if (!tree || !existsSync(path.join(tree, "bin", "pm-agent.js")))
+    fail("The preview worktree is missing — relaunch:  pm-agent preview " + (preview.branch || ""));
 
-  const mainTree = process.cwd();
-  if (!existsSync(path.join(mainTree, "bin", "pm-agent.js")))
-    fail("Run `pm-agent preview --link` from your pm-agent repo checkout.");
-  const curBranch = runLocal("git", ["-C", mainTree, "rev-parse", "--abbrev-ref", "HEAD"], {
-    capture: true,
-    tolerate: true,
-  }).stdout;
-  if (curBranch && preview.branch && curBranch !== preview.branch)
-    process.stdout.write(
-      `⚠ Your checkout is on ${curBranch} but the preview serves ${preview.branch}. The linked hooks will run ${curBranch}'s code — check out ${preview.branch} so they match.\n`
-    );
-
-  process.stdout.write("▶ Linking the pm-agent CLI to this checkout (npm link)…\n");
-  if (!runLocal("npm", ["link"], { cwd: mainTree, tolerate: true, capture: true }).ok)
+  process.stdout.write(`▶ Linking the pm-agent CLI to the ${preview.branch} preview (npm link)…\n`);
+  if (!runLocal("npm", ["link"], { cwd: tree, tolerate: true, capture: true }).ok)
     fail("npm link failed — is your npm global prefix writable? (nothing changed)");
 
   writeFileSync(
     captureLinkPath(),
     JSON.stringify(
-      { home: scratchHome, branch: preview.branch, tree: preview.tree, linkedAt: new Date().toISOString() },
+      { home: scratchHome, branch: preview.branch, tree, linkedAt: new Date().toISOString() },
       null,
       2
     )
   );
   process.stdout.write(
-    `\n🔗 Capture linked to the preview.\n` +
-      `  • Your hooks now run this checkout's code (${curBranch || "?"}).\n` +
+    `\n🔗 Capture linked to the ${preview.branch} preview.\n` +
+      `  • Your hooks now run the ${preview.branch} code (from the preview worktree).\n` +
       `  • Capture (observe/context/refresh) and \`eval\` now read/write the preview DB — never your real ledger.\n` +
       `  • Watch it live at ${preview.url}\n\n` +
       `  Work normally in any hooked repo; no env vars needed. When you're done:  pm-agent preview --unlink\n`
   );
 }
 
+// Remove the DB routing (the safety-critical revert) and restore the published CLI so the hooks
+// run stable code again. The reinstall is best-effort — if it can't reach npm, the pointer is
+// still gone (capture is back on your real ledger); you can rerun the reinstall yourself.
 function unlinkCapture() {
+  const wasLinked = existsSync(captureLinkPath());
   try {
     unlinkSync(captureLinkPath());
-    process.stdout.write("✓ Capture unlinked — hooks write to your real ledger again.\n");
-  } catch {
-    process.stdout.write("Capture wasn't linked.\n");
-  }
+  } catch {}
   process.stdout.write(
-    "  The CLI is still npm-linked to your checkout. To restore the published CLI:  npm i -g @dmayman/pm-agent\n"
+    wasLinked
+      ? "✓ Capture unlinked — hooks write to your real ledger again.\n"
+      : "Capture wasn't linked.\n"
   );
+  process.stdout.write("▶ Restoring the published CLI (npm i -g @dmayman/pm-agent)…\n");
+  if (runLocal("npm", ["i", "-g", "@dmayman/pm-agent"], { tolerate: true, capture: true }).ok) {
+    process.stdout.write("✓ Restored the published pm-agent CLI.\n");
+  } else {
+    process.stdout.write(
+      "⚠ Couldn't reinstall the published CLI (offline?). Your hooks may still run the branch code — rerun:  npm i -g @dmayman/pm-agent\n"
+    );
+  }
 }
 
 function cmdPreview(rest) {

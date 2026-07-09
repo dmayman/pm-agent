@@ -61,6 +61,7 @@ const ICON_PATHS = {
   arrowUp: '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>',
   arrowDown: '<line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/>',
   refresh: '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
 };
 function icon(name, cls){
   return `<svg class="icon${cls ? " " + cls : ""}" viewBox="0 0 24 24" fill="none" stroke="currentColor" `
@@ -229,6 +230,8 @@ const state = {
     openMenu:null, editCmd:null, error:null, mergedOpen:false, busy:new Set(),
     // the ONE preview slot, for repos opted into the restricted Primary/Preview layout (below).
     preview: { branch:null, status:"idle", url:null, error:null, pollTimer:null, hydrated:false, lastSyncedAt:null },
+    captureLink: null,       // /api/worktrees .captureLink — is the hook capture routed onto a preview?
+    clPollTimer: null,       // re-poll timer after a link/unlink (npm link is slow to settle)
   },
   wtData: null,            // last /api/worktrees payload (for no-network repaints)
   wtSig: "",               // last-rendered panel signature
@@ -1073,6 +1076,36 @@ function previewSyncHtml(){
     + `</div>`;
 }
 
+// The capture-link control — the "move onto the preview env" switch, shown as a service-like row
+// on the previewed branch and on Primary. It reflects the GLOBAL capture link (one at a time):
+// the CODE binding (the hooks' `pm-agent` npm-linked to the preview worktree → branch code runs in
+// your sessions) and the DATA binding (capture routed into the preview's scratch DB, never prod).
+// Link is enabled only when a preview is live to link to; Unlink reverts both.
+function captureLinkHtml(){
+  const cl = state.wt.captureLink;
+  if(!cl) return "";
+  const busy = state.wt.busy.has("pv-link");
+  const linked = !!cl.linked;
+  const canLink = !!cl.previewBranch; // a live preview exists to link onto
+  const cliState = linked ? (cl.cli && cl.cli.healthy ? "live" : "starting") : "stopped";
+  const dbState  = linked ? (cl.db && cl.db.present ? "live" : "starting") : "stopped";
+  const cliLbl = linked ? `hooks → ${esc(cl.branch)} code` : "hooks → published code";
+  const dbLbl  = linked
+    ? (cl.db && cl.db.lastSyncedAt ? `capture → preview DB · synced ${esc(syncAgo(cl.db.lastSyncedAt))}` : "capture → preview DB")
+    : "capture → real ledger";
+  const btn = linked
+    ? `<button class="wtp-btn stop wtp-link-btn" data-act="pv-unlink"${busy ? " disabled" : ""} title="Revert: restore the published CLI and write to your real ledger again">`
+      + `${busy ? `<span class="wtp-spin"></span>` : ""}<span>Unlink</span></button>`
+    : `<button class="wtp-btn run wtp-link-btn" data-act="pv-link"${busy || !canLink ? " disabled" : ""} `
+      + `title="${canLink ? `Route your hooks + capture onto the ${esc(cl.previewBranch)} preview` : "Start a preview first, then link"}">`
+      + `${busy ? `<span class="wtp-spin"></span>` : icon("link")}<span>Link</span></button>`;
+  return `<div class="wtp-link${linked ? " on" : ""}">`
+    + `<div class="wtp-link-rows">`
+    + `<div class="wtp-link-row"><span class="wtp-svc-dot ${cliState}"></span><span class="wtp-link-lbl" title="npm link → preview worktree">${cliLbl}</span></div>`
+    + `<div class="wtp-link-row"><span class="wtp-svc-dot ${dbState}"></span><span class="wtp-link-lbl">${dbLbl}</span></div>`
+    + `</div>${btn}</div>`;
+}
+
 // Primary's services, read-only: a status dot, name, and port — no open-link, no start/stop.
 // Unlike every other row in this panel, Primary's declared services can include the dashboard's
 // own process (pm-agent's "Observer"), and there's no sensible interactive control for that:
@@ -1114,12 +1147,15 @@ function wtpBranchRowSlotted(b, worktrees, baseName){
   // and status link, which are always amber regardless of launching/ready state (see wtpSlotPill).
   let h = `<div class="wtp-brow${isLive ? " live" : ""}${holdsPreview ? " preview" : ""}">`;
   h += `<div class="wtp-brow-top">${nm}${divergeChip(b.ahead, baseName)}${wtpSlotPill(b, baseName, menuOpen)}</div>`;
+  // The capture-link switch is global (one preview at a time), but we surface it where it's
+  // actionable: under the branch that holds the preview, and on Primary as the "on main" control.
+  const linkHtml = (b.isDefault || holdsPreview) ? captureLinkHtml() : "";
   if(primaryWt){
-    h += `<div class="wtp-brow-run">${primaryServicesHtml(primaryWt)}</div>`;
+    h += `<div class="wtp-brow-run">${primaryServicesHtml(primaryWt)}${linkHtml}</div>`;
   }else if(holdsPreview){
     const status = previewStatusHtml();
     const sync = previewSyncHtml();
-    if(status || sync) h += `<div class="wtp-brow-run">${status}${sync}</div>`;
+    if(status || sync || linkHtml) h += `<div class="wtp-brow-run">${status}${sync}${linkHtml}</div>`;
   }
   if(menuOpen) h += wtpSlotMenu(b.name, baseName);
   return h + `</div>`;
@@ -1233,6 +1269,7 @@ async function renderWorktreePanel(force){
   const worktrees = data.worktrees || [];
   const branches = data.branches || [];
   const worktreePanel = data.worktreePanel || null;
+  state.wt.captureLink = data.captureLink || null;
   state.wtData = { worktrees, branches, serverScanned: data.serverScanned, defaultBranch: data.defaultBranch, worktreePanel };
 
   // Repos opted into the restricted layout: on first load, adopt whatever preview is already
@@ -1250,6 +1287,7 @@ async function renderWorktreePanel(force){
     b: branches.map((x) => [x.name, x.worktreePath, x.merged, x.ahead, x.committedAt]),
     ui: [w.openMenu, w.editCmd, w.error, w.mergedOpen, [...w.busy]],
     p: worktreePanel,
+    cl: w.captureLink,
   });
   if(!force && sig === state.wtSig) return;
   hideBnameTip(); // the hovered element is about to be thrown away — don't leave its tip stuck
@@ -1301,6 +1339,24 @@ function pollPreviewState(branch, attempt = 0){
       return repaintPanel();
     }
     pollPreviewState(branch, attempt + 1);
+  }, 1000);
+}
+
+// After a link/unlink, poll /api/worktrees until captureLink.linked matches what we asked for (the
+// CLI's npm link / reinstall takes a few seconds to land), or give up after ~15s. renderWorktreePanel
+// refreshes state.wt.captureLink; we clear the busy flag once it settles so the button un-spinners.
+function pollCaptureLink(expectLinked, attempt = 0){
+  const w = state.wt;
+  if(w.clPollTimer) clearTimeout(w.clPollTimer);
+  w.clPollTimer = setTimeout(async () => {
+    await renderWorktreePanel(true);
+    const settled = !!(w.captureLink && w.captureLink.linked) === expectLinked;
+    if(settled || attempt >= 15){
+      w.busy.delete("pv-link");
+      w.clPollTimer = null;
+      return renderWorktreePanel(true);
+    }
+    pollCaptureLink(expectLinked, attempt + 1);
   }, 1000);
 }
 
@@ -1441,6 +1497,20 @@ async function handleWtAction(el){
     // launch it right away (same trigger behavior as before the picker-based redesign).
     w.openMenu = null;
     return handlePreviewSelect(branch);
+  }
+  if(act === "pv-link" || act === "pv-unlink"){
+    // Route capture onto (or off) the previewed branch. The server shells out to the CLI, which
+    // npm-links the preview worktree / reinstalls the published CLI — both take a few seconds — so
+    // we mark busy, fire, then re-poll /api/worktrees a handful of times until captureLink settles.
+    w.busy.add("pv-link"); repaintPanel();
+    const r = await apiPost(act === "pv-link" ? "/api/preview/link" : "/api/preview/unlink", {});
+    if(r && r.ok === false){
+      w.busy.delete("pv-link");
+      w.error = r.error || "couldn't change the capture link";
+      return repaintPanel();
+    }
+    pollCaptureLink(act === "pv-link");
+    return;
   }
   if(act === "pv-reseed"){
     // Resync the running preview's scratch DB from prod. The server reseeds by relaunching the
