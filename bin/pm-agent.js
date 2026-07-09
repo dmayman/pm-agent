@@ -54,6 +54,8 @@ LOCAL-DEV COMMANDS
                        touching your live observer. The scratch DB is seeded
                        once, then kept across relaunches; resync it from prod on
                        demand. --stop | --fresh | --reseed | --port N
+                       --link | --unlink route live capture (hooks) onto the
+                       previewed branch's code + DB, then back.
   validate [path]    Validate the marketplace + plugin manifests (--strict)
   release <level>    Cut a release: bump (patch|minor|major), tag, push, publish
                        to npm. Run from the repo (or pass its path).
@@ -686,11 +688,92 @@ function parentObserverUrl(home) {
   return "http://localhost:4477";
 }
 
+// The capture-link pointer lives in the REAL home (never a scratch one), so it survives home
+// redirects. When present, ledger CAPTURE commands are routed into its `home` (a preview's scratch
+// DB) even though the hook invoked a bare `pm-agent` with no PM_AGENT_HOME — that's how capture
+// "moves onto" a branch-under-test's preview without per-session env vars. `serve` is excluded, so
+// your always-on observer keeps reading the real ledger.
+function captureLinkPath() {
+  return path.join(os.homedir(), ".pm-agent", "capture-link.json");
+}
+function readCaptureLink() {
+  try {
+    return JSON.parse(readFileSync(captureLinkPath(), "utf8"));
+  } catch {
+    return null;
+  }
+}
+// Route this invocation's ledger home to the linked preview, unless the caller set one explicitly.
+function applyCaptureLink() {
+  if (process.env.PM_AGENT_HOME) return; // an explicit home always wins (e.g. the preview server)
+  const link = readCaptureLink();
+  if (link && link.home) process.env.PM_AGENT_HOME = link.home;
+}
+
+// `pm-agent preview --link`: bind the global CLI (what the hooks call) to this checkout's code and
+// route all capture into the live preview's scratch DB. The reusable "move onto the preview env"
+// switch — after this you just work normally in your hooked repos and watch the preview dashboard.
+function linkCaptureToPreview() {
+  const home = path.join(os.homedir(), ".pm-agent");
+  let preview = null;
+  try {
+    preview = JSON.parse(readFileSync(path.join(home, "preview.json"), "utf8"));
+  } catch {}
+  if (!preview) fail("No preview is running. Start one first:  pm-agent preview <branch>");
+  const scratchHome = path.join(home, "preview-home");
+
+  const mainTree = process.cwd();
+  if (!existsSync(path.join(mainTree, "bin", "pm-agent.js")))
+    fail("Run `pm-agent preview --link` from your pm-agent repo checkout.");
+  const curBranch = runLocal("git", ["-C", mainTree, "rev-parse", "--abbrev-ref", "HEAD"], {
+    capture: true,
+    tolerate: true,
+  }).stdout;
+  if (curBranch && preview.branch && curBranch !== preview.branch)
+    process.stdout.write(
+      `⚠ Your checkout is on ${curBranch} but the preview serves ${preview.branch}. The linked hooks will run ${curBranch}'s code — check out ${preview.branch} so they match.\n`
+    );
+
+  process.stdout.write("▶ Linking the pm-agent CLI to this checkout (npm link)…\n");
+  if (!runLocal("npm", ["link"], { cwd: mainTree, tolerate: true, capture: true }).ok)
+    fail("npm link failed — is your npm global prefix writable? (nothing changed)");
+
+  writeFileSync(
+    captureLinkPath(),
+    JSON.stringify(
+      { home: scratchHome, branch: preview.branch, tree: preview.tree, linkedAt: new Date().toISOString() },
+      null,
+      2
+    )
+  );
+  process.stdout.write(
+    `\n🔗 Capture linked to the preview.\n` +
+      `  • Your hooks now run this checkout's code (${curBranch || "?"}).\n` +
+      `  • Capture (observe/context/refresh) and \`eval\` now read/write the preview DB — never your real ledger.\n` +
+      `  • Watch it live at ${preview.url}\n\n` +
+      `  Work normally in any hooked repo; no env vars needed. When you're done:  pm-agent preview --unlink\n`
+  );
+}
+
+function unlinkCapture() {
+  try {
+    unlinkSync(captureLinkPath());
+    process.stdout.write("✓ Capture unlinked — hooks write to your real ledger again.\n");
+  } catch {
+    process.stdout.write("Capture wasn't linked.\n");
+  }
+  process.stdout.write(
+    "  The CLI is still npm-linked to your checkout. To restore the published CLI:  npm i -g @dmayman/pm-agent\n"
+  );
+}
+
 function cmdPreview(rest) {
   if (rest.includes("--stop") || rest.includes("--remove")) {
     stopPreview();
     return;
   }
+  if (rest.includes("--link")) return linkCaptureToPreview();
+  if (rest.includes("--unlink")) return unlinkCapture();
   const home = realHome();
   mkdirSync(home, { recursive: true });
 
@@ -814,6 +897,17 @@ function cmdPreview(rest) {
 
 const argv = process.argv.slice(2);
 const [cmd, arg] = argv;
+
+// When a preview is linked (`pm-agent preview --link`), route ledger CAPTURE commands into the
+// preview's scratch DB — so the hooks (which call a bare `pm-agent` with no PM_AGENT_HOME) land on
+// the branch-under-test's ledger. `serve` is intentionally NOT in this set: your always-on observer
+// must keep serving the real ledger while capture is diverted to the preview.
+const CAPTURE_CMDS = new Set([
+  "enable", "disable", "log", "thread", "initiative", "timeline", "inflight", "loose",
+  "issue-title", "config", "context", "observe", "eval", "ingest", "refresh", "synthesize",
+  "recluster",
+]);
+if (CAPTURE_CMDS.has(cmd)) applyCaptureLink();
 
 switch (cmd) {
   case "install":
