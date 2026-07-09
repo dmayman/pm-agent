@@ -1041,7 +1041,6 @@ function wtpSlotPill(b, baseName, menuOpen){
 // state instead of a per-worktree dev server's.
 function previewStatusHtml(){
   const p = state.wt.preview;
-  if(p.self) return ""; // on the preview itself, the top banner already says so — no self-link
   if(p.status === "launching"){
     return `<div class="wtp-run starting"><span class="wtp-spin"></span>`
       + `<span class="wtp-starting">launching preview…</span></div>`;
@@ -1062,7 +1061,6 @@ function previewStatusHtml(){
 // while it's still launching or errored.
 function previewSyncHtml(){
   const p = state.wt.preview;
-  if(p.self) return ""; // resync relaunches the preview from the real observer — not from itself
   if(p.status !== "ready") return "";
   const busy = state.wt.busy.has("pv-reseed");
   const label = p.lastSyncedAt ? "Last synced " + syncAgo(p.lastSyncedAt) : "Never synced";
@@ -1078,34 +1076,43 @@ function previewSyncHtml(){
     + `</div>`;
 }
 
-// The capture-link control — the "move onto the preview env" switch, shown as a service-like row
-// on the previewed branch and on Primary. It reflects the GLOBAL capture link (one at a time):
-// the CODE binding (the hooks' `pm-agent` npm-linked to the preview worktree → branch code runs in
-// your sessions) and the DATA binding (capture routed into the preview's scratch DB, never prod).
-// Link is enabled only when a preview is live to link to; Unlink reverts both.
-function captureLinkHtml(){
+// The capture-link control, rendered on BOTH the Primary (real-ledger) card and the previewed-branch
+// (preview-DB) card as a two-way TOGGLE: capture points at exactly one of them. The active target
+// shows a grayed, disabled "Linked" with green dots; the other shows an actionable "Link" that
+// switches to it. `kind` is "prod" (Primary) or "preview" (the previewed branch). Clicking prod's
+// Link unlinks (back to your real ledger); clicking preview's Link links (npm-links the preview
+// worktree + routes capture into its scratch DB). The state is global — the two cards stay in sync.
+function captureLinkHtml(kind){
   const cl = state.wt.captureLink;
   if(!cl) return "";
   const busy = state.wt.busy.has("pv-link");
-  const linked = !!cl.linked;
-  const canLink = !!cl.previewBranch; // a live preview exists to link onto
-  const cliState = linked ? (cl.cli && cl.cli.healthy ? "live" : "starting") : "stopped";
-  const dbState  = linked ? (cl.db && cl.db.present ? "live" : "starting") : "stopped";
-  const cliLbl = linked ? `hooks → ${esc(cl.branch)} code` : "hooks → published code";
-  const dbLbl  = linked
-    ? (cl.db && cl.db.lastSyncedAt ? `capture → preview DB · synced ${esc(syncAgo(cl.db.lastSyncedAt))}` : "capture → preview DB")
-    : "capture → real ledger";
-  const btn = linked
-    ? `<button class="wtp-btn stop wtp-link-btn" data-act="pv-unlink"${busy ? " disabled" : ""} title="Revert: restore the published CLI and write to your real ledger again">`
-      + `${busy ? `<span class="wtp-spin"></span>` : ""}<span>Unlink</span></button>`
-    : `<button class="wtp-btn run wtp-link-btn" data-act="pv-link"${busy || !canLink ? " disabled" : ""} `
-      + `title="${canLink ? `Route your hooks + capture onto the ${esc(cl.previewBranch)} preview` : "Start a preview first, then link"}">`
-      + `${busy ? `<span class="wtp-spin"></span>` : icon("link")}<span>Link</span></button>`;
-  return `<div class="wtp-link${linked ? " on" : ""}">`
-    + `<div class="wtp-link-rows">`
-    + `<div class="wtp-link-row"><span class="wtp-svc-dot ${cliState}"></span><span class="wtp-link-lbl" title="npm link → preview worktree">${cliLbl}</span></div>`
-    + `<div class="wtp-link-row"><span class="wtp-svc-dot ${dbState}"></span><span class="wtp-link-lbl">${dbLbl}</span></div>`
-    + `</div>${btn}</div>`;
+  const onPreview = !!cl.linked;                                   // capture currently on the preview branch
+  const active = kind === "prod" ? !onPreview : onPreview;         // is THIS card the current target?
+  const dot = active ? "live" : "stopped";
+  const br = cl.branch || cl.previewBranch || "branch";
+  let rows;
+  if(kind === "prod"){
+    rows = `<div class="wtp-link-row"><span class="wtp-svc-dot ${dot}"></span><span class="wtp-link-lbl">hooks → published code</span></div>`
+         + `<div class="wtp-link-row"><span class="wtp-svc-dot ${dot}"></span><span class="wtp-link-lbl">capture → real ledger</span></div>`;
+  }else{
+    const dbLbl = (cl.db && cl.db.lastSyncedAt) ? `capture → preview DB · synced ${esc(syncAgo(cl.db.lastSyncedAt))}` : "capture → preview DB";
+    rows = `<div class="wtp-link-row"><span class="wtp-svc-dot ${dot}"></span><span class="wtp-link-lbl">hooks → ${esc(br)} code</span></div>`
+         + `<div class="wtp-link-row"><span class="wtp-svc-dot ${dot}"></span><span class="wtp-link-lbl">${dbLbl}</span></div>`;
+  }
+  let btn;
+  if(active){
+    btn = `<button class="wtp-btn wtp-link-btn linked" disabled title="capture is currently pointed here">`
+        + `<span>Linked</span></button>`;
+  }else{
+    const canLink = kind === "preview" ? !!cl.previewBranch : true; // need a live preview to link onto it
+    const act = kind === "preview" ? "pv-link" : "pv-unlink";
+    const title = kind === "preview"
+      ? (canLink ? `Route your hooks + capture onto the ${esc(cl.previewBranch)} preview` : "Start a preview first, then link")
+      : "Point capture back at your real ledger (restores the published CLI)";
+    btn = `<button class="wtp-btn wtp-link-btn act" data-act="${act}"${busy || !canLink ? " disabled" : ""} title="${title}">`
+        + `${busy ? `<span class="wtp-spin"></span>` : icon("link")}<span>Link</span></button>`;
+  }
+  return `<div class="wtp-link${active ? " on" : ""}"><div class="wtp-link-rows">${rows}</div>${btn}</div>`;
 }
 
 // Primary's services, read-only: a status dot, name, and port — no open-link, no start/stop.
@@ -1149,15 +1156,14 @@ function wtpBranchRowSlotted(b, worktrees, baseName){
   // and status link, which are always amber regardless of launching/ready state (see wtpSlotPill).
   let h = `<div class="wtp-brow${isLive ? " live" : ""}${holdsPreview ? " preview" : ""}">`;
   h += `<div class="wtp-brow-top">${nm}${divergeChip(b.ahead, baseName)}${wtpSlotPill(b, baseName, menuOpen)}</div>`;
-  // The capture-link switch is global (one preview at a time), but we surface it where it's
-  // actionable: under the branch that holds the preview, and on Primary as the "on main" control.
-  const linkHtml = (b.isDefault || holdsPreview) ? captureLinkHtml() : "";
+  // The capture-link toggle: the Primary card is the "real ledger" half, the previewed branch is
+  // the "preview DB" half. Exactly one is active; each renders its side of the switch.
   if(primaryWt){
-    h += `<div class="wtp-brow-run">${primaryServicesHtml(primaryWt)}${linkHtml}</div>`;
+    h += `<div class="wtp-brow-run">${primaryServicesHtml(primaryWt)}${captureLinkHtml("prod")}</div>`;
   }else if(holdsPreview){
     const status = previewStatusHtml();
     const sync = previewSyncHtml();
-    if(status || sync || linkHtml) h += `<div class="wtp-brow-run">${status}${sync}${linkHtml}</div>`;
+    h += `<div class="wtp-brow-run">${status}${sync}${captureLinkHtml("preview")}</div>`;
   }
   if(menuOpen) h += wtpSlotMenu(b.name, baseName);
   return h + `</div>`;
@@ -1526,6 +1532,13 @@ async function handleWtAction(el){
       p.status = "error"; p.error = r.error || "couldn't resync preview";
       return repaintPanel();
     }
+    // Reseeding restarts the preview server. When THIS page IS that preview, we can't poll it
+    // (it's coming down + back on the same port) — just reload once it's had time to rebind.
+    if(p.self){
+      p.status = "launching"; repaintPanel();
+      setTimeout(() => location.reload(), 2500);
+      return;
+    }
     if(p.branch){
       if(p.pollTimer){ clearTimeout(p.pollTimer); p.pollTimer = null; }
       p.status = "launching"; p.url = null; p.error = null;
@@ -1661,6 +1674,7 @@ function applyPreviewChrome(preview){
     pv.branch = preview.branch || null;
     pv.status = "ready";
     pv.url = location.origin;
+    if("lastSyncedAt" in preview) pv.lastSyncedAt = preview.lastSyncedAt;
     repaintPanel(); // no-ops until the panel has data; reflects the seeded slot once it does
   }else{
     pv.self = false;

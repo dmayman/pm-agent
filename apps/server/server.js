@@ -69,10 +69,18 @@ function pidAlive(pid) {
 function previewInfo() {
   if (process.env.PM_AGENT_PREVIEW === "1") {
     // The preview knows its own branch and a link back to the real observer (for the env toggle).
+    // It also surfaces its own lastSyncedAt (from the real-home rendezvous) so its branch card
+    // renders the same "Last synced …" line as prod does.
+    let lastSyncedAt = null;
+    try {
+      const rh = process.env.PM_AGENT_REAL_HOME;
+      if (rh) lastSyncedAt = JSON.parse(readFileSync(path.join(rh, "preview.json"), "utf8")).lastSyncedAt || null;
+    } catch {}
     return {
       self: true,
       branch: process.env.PM_AGENT_PREVIEW_BRANCH || null,
       parentUrl: process.env.PM_AGENT_PARENT_URL || null,
+      lastSyncedAt,
     };
   }
   const j = livePreview();
@@ -374,7 +382,15 @@ async function writeApi(db, repo, url, body, serverPort) {
   // it). Everything — branch, port, the file paths that get copied — is resolved server-side from
   // the rendezvous; the request body carries nothing, so a hostile POST can't redirect the copy.
   if (p === "/api/preview/reseed") {
-    const lp = livePreview();
+    // From the real observer, livePreview() names the running preview. From the preview server
+    // itself (livePreview() is null by design) fall back to the real-home rendezvous, so Resync
+    // works on the preview's own card too — it relaunches this server with --reseed on its port.
+    let lp = livePreview();
+    if (!lp && process.env.PM_AGENT_PREVIEW === "1" && process.env.PM_AGENT_REAL_HOME) {
+      try {
+        lp = JSON.parse(readFileSync(path.join(process.env.PM_AGENT_REAL_HOME, "preview.json"), "utf8"));
+      } catch {}
+    }
     if (!lp) return { __status: 409, error: "no preview is running" };
     const cli = path.join(repo.root, "bin", "pm-agent.js");
     if (!existsSync(cli)) return { __status: 400, error: "not a pm-agent checkout" };
