@@ -696,6 +696,17 @@ function parentObserverUrl(home) {
 function captureLinkPath() {
   return path.join(os.homedir(), ".pm-agent", "capture-link.json");
 }
+
+// Run npm robustly — including from the launchd observer, whose PATH is the minimal
+// /usr/bin:/bin:/usr/sbin:/sbin with no `npm` (and no `node` for npm's `env node` shebang). We
+// invoke npm-cli.js directly with the running node, resolved next to it; falls back to a PATH `npm`
+// for odd layouts.
+function runNpm(subArgs, opts = {}) {
+  const nodeDir = path.dirname(process.execPath);
+  const cli = path.join(nodeDir, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js");
+  if (existsSync(cli)) return runLocal(process.execPath, [cli, ...subArgs], opts);
+  return runLocal("npm", subArgs, opts);
+}
 function readCaptureLink() {
   try {
     return JSON.parse(readFileSync(captureLinkPath(), "utf8"));
@@ -729,7 +740,7 @@ function linkCaptureToPreview() {
     fail("The preview worktree is missing — relaunch:  pm-agent preview " + (preview.branch || ""));
 
   process.stdout.write(`▶ Linking the pm-agent CLI to the ${preview.branch} preview (npm link)…\n`);
-  if (!runLocal("npm", ["link"], { cwd: tree, tolerate: true, capture: true }).ok)
+  if (!runNpm(["link"], { cwd: tree, tolerate: true, capture: true }).ok)
     fail("npm link failed — is your npm global prefix writable? (nothing changed)");
 
   writeFileSync(
@@ -763,7 +774,7 @@ function unlinkCapture() {
       : "Capture wasn't linked.\n"
   );
   process.stdout.write("▶ Restoring the published CLI (npm i -g @dmayman/pm-agent)…\n");
-  if (runLocal("npm", ["i", "-g", "@dmayman/pm-agent"], { tolerate: true, capture: true }).ok) {
+  if (runNpm(["i", "-g", "@dmayman/pm-agent"], { tolerate: true, capture: true }).ok) {
     process.stdout.write("✓ Restored the published pm-agent CLI.\n");
   } else {
     process.stdout.write(
