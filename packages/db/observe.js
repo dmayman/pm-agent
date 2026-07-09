@@ -24,8 +24,10 @@ function readStdin() {
 
 // Turn a transcript JSONL slice into a compact text digest: user prompts, Claude's text,
 // and the names of actions it took. Tool-result payloads are dropped — they're huge and
-// the summary lives in Claude's own words anyway.
-function digestLines(lines) {
+// the summary lives in Claude's own words anyway. With { raw: true } the per-message and
+// whole-digest clamps are lifted — that's the untruncated version the eval harness tees into
+// the raw ledger; the clamped default is what feeds the (token-metered) Haiku prompt.
+function digestLines(lines, { raw = false } = {}) {
   const out = [];
   for (const line of lines) {
     let obj;
@@ -44,34 +46,57 @@ function digestLines(lines) {
     if (!Array.isArray(content)) continue;
     for (const block of content) {
       if (block.type === "text" && block.text && block.text.trim()) {
-        out.push(`${role === "user" ? "USER" : "CLAUDE"}: ${block.text.trim().slice(0, 800)}`);
+        const text = raw ? block.text.trim() : block.text.trim().slice(0, 800);
+        out.push(`${role === "user" ? "USER" : "CLAUDE"}: ${text}`);
       } else if (block.type === "tool_use") {
         const target =
           block.input?.file_path || block.input?.command || block.input?.path || "";
-        out.push(`ACTION: ${block.name}${target ? " " + String(target).slice(0, 120) : ""}`);
+        const t = raw ? String(target) : String(target).slice(0, 120);
+        out.push(`ACTION: ${block.name}${target ? " " + t : ""}`);
       }
     }
   }
   let text = out.join("\n");
-  if (text.length > MAX_DIGEST_CHARS) text = text.slice(-MAX_DIGEST_CHARS);
+  if (!raw && text.length > MAX_DIGEST_CHARS) text = text.slice(-MAX_DIGEST_CHARS);
   return text;
 }
 
-function buildPrompt(digest, threadTitles) {
-  const known = threadTitles.length
-    ? `\n\nExisting threads you should reuse when the work fits one (match by title, don't duplicate):\n- ${threadTitles.join("\n- ")}`
+function buildPrompt(digest, initiatives) {
+  // Show the model each initiative BY ITS GOAL, not just its title, so it attributes work by
+  // what the initiative is trying to achieve rather than a surface label — and can tell when
+  // this session is a genuinely new goal.
+  const known = initiatives.length
+    ? `\n\nExisting initiatives (match this session's work to one by its GOAL, not just its title; use the EXACT title below when it fits):\n` +
+      initiatives.map((i) => `- "${i.title}" — goal: ${i.goal ? i.goal : "(no goal captured yet)"}`).join("\n")
     : "";
-  return `You maintain a developer's work ledger. Below is an excerpt from a Claude Code coding session. Extract ONLY the meaningful, timeline-worthy events — decisions made, build/test/review milestones reached, followups taken on, and loose ends explicitly deferred. Skip routine chatter, tool mechanics, and anything trivial. Most excerpts yield 0-3 events; returning an empty array is correct and expected when nothing notable happened.
+  return `You maintain a developer's work ledger. Below is an excerpt from a Claude Code coding session. Do two things:
 
-For each event output an object:
-  "type": one of decided|built|tested|reviewed|followup|deferred|merged|blocked|note
-  "summary": one crisp past-tense line a busy developer would want on their timeline
-  "thread": the title of the arc of work this belongs to (reuse an existing one when it fits, or a short new title)
-  "refs": optional object with any of {"issue":<n>,"pr":<n>,"branch":"<s>","commit":"<sha>"}
+1) GOAL — Identify the durable goal this session is pursuing. Treat the FIRST user message of the excerpt as a goal-candidate: the moment a goal is framed is often the opening prompt, and it must not slip by as ordinary chatter. Decide whether this work advances one of the existing initiatives (below) or is a NEW goal.
 
-Use "deferred" ONLY for things explicitly punted to later — those become tracked loose ends.${known}
+2) EVENTS — Extract ONLY the meaningful, timeline-worthy events — decisions made, build/test/review milestones reached, followups taken on, and loose ends explicitly deferred. Skip routine chatter, tool mechanics, and anything trivial. Most excerpts yield 0-3 events; an empty array is correct and expected when nothing notable happened.
 
-Respond with ONLY a JSON array (no prose, no code fence). Excerpt:
+Respond with ONLY a JSON object (no prose, no code fence) of this shape:
+{
+  "goal": {
+    "text": "the durable goal in one line — what the work aims to achieve (not the tactic of the moment)",
+    "initiative": "the EXACT title of a matching initiative above, or a short new title if none fits",
+    "isNew": true or false,
+    "framing": "a short quote or paraphrase of the moment the goal was framed (usually the opening user message)",
+    "shift": "if the goal sharpened versus the matched initiative's goal, say how — else null"
+  },
+  "events": [
+    {
+      "type": "one of decided|built|tested|reviewed|followup|deferred|merged|blocked|note",
+      "summary": "one crisp past-tense line a busy developer would want on their timeline",
+      "thread": "the initiative title this belongs to (reuse goal.initiative when it fits)",
+      "refs": { "issue": 0, "pr": 0, "branch": "", "commit": "" }
+    }
+  ]
+}
+
+Rules: "goal" may be null only if the excerpt truly frames no goal (rare). Use "deferred" ONLY for things explicitly punted to later — those become tracked loose ends. Omit empty "refs".${known}
+
+Excerpt:
 ---
 ${digest}`;
 }
@@ -87,6 +112,31 @@ function extractJsonArray(text) {
   } catch {
     return [];
   }
+}
+
+// Parse the distiller's response into { goal, events }. The model is asked for an object, but
+// we degrade gracefully: a bare array (old shape / model drift) is treated as events with no
+// goal, and a malformed object still yields whatever events we can recover. Never throws.
+// Exported for tests.
+export function extractSessionAnalysis(text) {
+  if (!text) return { goal: null, events: [] };
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start !== -1 && end !== -1 && end > start) {
+    try {
+      const obj = JSON.parse(text.slice(start, end + 1));
+      // Only accept it as the wrapper if it actually carries goal/events — otherwise this was
+      // a bare array whose inner objects we accidentally grabbed; fall through to array parsing.
+      if (obj && typeof obj === "object" && !Array.isArray(obj) && ("goal" in obj || "events" in obj)) {
+        const events = Array.isArray(obj.events) ? obj.events : [];
+        const goal = obj.goal && typeof obj.goal === "object" ? obj.goal : null;
+        return { goal, events };
+      }
+    } catch {
+      // fall through to the array fallback
+    }
+  }
+  return { goal: null, events: extractJsonArray(text) };
 }
 
 // Entry point invoked by the Stop hook (payload on stdin). Fast + non-blocking.
@@ -118,25 +168,44 @@ export function observe(cwd = process.cwd()) {
   const cursorKey = `cursor:${sessionId}`;
   const cursor = Number(S.getConfig(db, "global", cursorKey, "0")) || 0;
   const fresh = allLines.slice(cursor);
+  const turn = allLines.length;
   // Advance the cursor now, so a slow/failed worker never causes reprocessing next turn.
-  S.setConfig(db, "global", cursorKey, String(allLines.length));
+  S.setConfig(db, "global", cursorKey, String(turn));
   if (!fresh.length) return;
 
   const digest = digestLines(fresh);
   if (digest.length < MIN_DIGEST_CHARS) return;
 
-  const threadTitles = S.listThreads(db, repo.id)
+  // Eval harness: tee the UNTRUNCATED digest into the raw ledger here, in the synchronous hook
+  // path — so ground truth is captured even if the Haiku worker below never runs or fails. No
+  // model call; this is just the text we already built. Append-only, idempotent per (session,turn).
+  try {
+    S.appendSessionLog(db, repo.id, {
+      sessionId,
+      turn,
+      cursorStart: cursor,
+      digest: digestLines(fresh, { raw: true }),
+    });
+  } catch {}
+
+  const initiatives = S.listThreads(db, repo.id)
     .filter((t) => t.status !== "done")
-    .map((t) => t.title)
-    .slice(0, 20);
+    .slice(0, 20)
+    .map((t) => ({ title: t.title, goal: t.goal || null }));
 
   // Hand the heavy Haiku call to a detached worker and return immediately.
   const jobDir = path.join(S.pmHome(), "jobs");
   mkdirSync(jobDir, { recursive: true });
-  const jobFile = path.join(jobDir, `${sessionId}-${allLines.length}.json`);
+  const jobFile = path.join(jobDir, `${sessionId}-${turn}.json`);
   writeFileSync(
     jobFile,
-    JSON.stringify({ repoSlug: repo.slug, root: repo.root, prompt: buildPrompt(digest, threadTitles) })
+    JSON.stringify({
+      repoSlug: repo.slug,
+      root: repo.root,
+      sessionId,
+      turn,
+      prompt: buildPrompt(digest, initiatives),
+    })
   );
 
   const self = fileURLToPath(new URL("../../bin/pm-agent.js", import.meta.url));
@@ -165,9 +234,23 @@ export async function observeWorker(jobFile) {
     cleanup(jobFile);
     return;
   }
-  const events = extractJsonArray(output);
+  const { goal, events } = extractSessionAnalysis(output);
   if (repo) {
     const touched = new Set();
+
+    // Goal-first capture (#26): seed/refine the initiative's durable goal from what this
+    // session is pursuing, before (or alongside) any events. resolveThread creates the
+    // initiative by title when it's new; setThreadGoal's trust guard refines an observer goal
+    // but never clobbers an agent-seeded one.
+    if (goal && goal.text && goal.initiative) {
+      const gid = S.resolveThread(db, repo.id, String(goal.initiative));
+      if (gid) {
+        S.setThreadGoal(db, gid, { goal: goal.text, framing: goal.framing, source: "observer" });
+        if (goal.framing) S.setThreadGenesis(db, gid, String(goal.framing));
+        touched.add(gid);
+      }
+    }
+
     for (const e of events) {
       if (!e || !e.type || !e.summary) continue;
       const threadId = e.thread ? S.resolveThread(db, repo.id, String(e.thread)) : null;
@@ -196,10 +279,17 @@ export async function observeWorker(jobFile) {
     // reclassify silently within a turn or two of the change — no manual `ingest` needed.
     for (const id of await maybeRefreshLifecycle(db, repo)) touched.add(id);
 
-    // Re-synthesize every thread we touched (new event) or whose issue status just flipped.
+    // Re-synthesize every thread we touched (new event) or whose issue status just flipped,
+    // then snapshot it — the trajectory row the eval harness grades (goal seeded → refined →
+    // sharpened across turns). Snapshot AFTER synthesis so it captures the fresh summary.
     if (touched.size) {
       const { synthesizeThread } = await import("./synthesize.js");
-      for (const id of touched) synthesizeThread(db, repo, id);
+      for (const id of touched) {
+        synthesizeThread(db, repo, id);
+        try {
+          S.snapshotInitiative(db, repo.id, id, { sessionId: job.sessionId, turn: job.turn });
+        } catch {}
+      }
     }
   }
   cleanup(jobFile);

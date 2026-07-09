@@ -143,6 +143,44 @@ CREATE TABLE IF NOT EXISTS usage (
   cost_usd              REAL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS usage_repo_ts ON usage(repo_id, ts);
+
+-- Eval harness: the raw, judgment-free per-turn ledger. One row per observer turn, holding
+-- the UNTRUNCATED digest the observer built (the clamped version still feeds Haiku). This is
+-- ground truth for grading how well live capture did — written synchronously in the hook so
+-- it survives even when the Haiku worker fails. Append-only.
+CREATE TABLE IF NOT EXISTS session_log (
+  id           INTEGER PRIMARY KEY,
+  repo_id      INTEGER NOT NULL REFERENCES repos(id),
+  session_id   TEXT NOT NULL,
+  turn         INTEGER NOT NULL,     -- transcript line count after this slice (monotonic per session)
+  cursor_start INTEGER,              -- prior cursor = slice start
+  digest       TEXT NOT NULL,        -- untruncated USER/CLAUDE/ACTION digest for this turn
+  char_count   INTEGER,
+  created_at   TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS session_log_turn ON session_log(session_id, turn);
+CREATE INDEX IF NOT EXISTS session_log_repo ON session_log(repo_id, session_id);
+
+-- Eval harness: the librarian's trajectory. One snapshot of an initiative's state each time
+-- the observer synthesizes it, so the judge can see the goal seeded -> refined -> sharpened
+-- across turns rather than only its final state.
+CREATE TABLE IF NOT EXISTS initiative_snapshots (
+  id          INTEGER PRIMARY KEY,
+  repo_id     INTEGER NOT NULL REFERENCES repos(id),
+  thread_id   INTEGER NOT NULL REFERENCES threads(id),
+  session_id  TEXT,
+  turn        INTEGER,               -- the turn/cursor that triggered this snapshot
+  goal        TEXT,
+  goal_source TEXT,
+  why         TEXT,
+  genesis     TEXT,
+  summary     TEXT,
+  event_count INTEGER,
+  event_ids   TEXT,                  -- json array of event ids in the initiative at snapshot time
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS snapshots_thread ON initiative_snapshots(thread_id, created_at);
+CREATE INDEX IF NOT EXISTS snapshots_session ON initiative_snapshots(session_id);
 `;
 
 // Add a column if an older DB doesn't have it yet (CREATE TABLE IF NOT EXISTS won't alter).
@@ -164,6 +202,14 @@ export function openDb() {
   // Migrations for DBs created before these columns existed.
   ensureColumn(db, "threads", "summary", "TEXT"); // Haiku-synthesized plain-language what/why
   ensureColumn(db, "threads", "summary_event_count", "INTEGER"); // staleness marker
+  // Goal-first capture (#26): an initiative is defined by its durable goal, not its title. The
+  // goal is seeded at birth and refined as work reveals more; an agent-seeded goal is high-trust
+  // and must never be clobbered by the observer's inference (guarded in setThreadGoal).
+  ensureColumn(db, "threads", "goal", "TEXT"); // the durable goal — what this initiative aims to achieve
+  ensureColumn(db, "threads", "goal_source", "TEXT"); // 'agent' (high-trust) | 'observer' (inferred)
+  ensureColumn(db, "threads", "goal_framing", "TEXT"); // the quoted moment the goal was framed
+  ensureColumn(db, "threads", "why", "TEXT"); // the motivation/impact — seeded at birth
+  ensureColumn(db, "threads", "why_source", "TEXT"); // 'agent' (high-trust) | 'observer' (inferred)
   // issue_titles started life as just number→title; it's now the issues table with
   // lifecycle + thread membership. Grow it in place.
   ensureColumn(db, "issue_titles", "state", "TEXT"); // OPEN | CLOSED (from gh)
@@ -317,6 +363,70 @@ export function setThreadSummary(db, id, summary, eventCount) {
     eventCount,
     id
   );
+}
+
+// The trust level of a thread's current goal ('agent' beats 'observer'). Callers writing an
+// observer-inferred goal must not overwrite an agent-seeded one.
+export function goalSource(db, id) {
+  const row = db.prepare("SELECT goal_source FROM threads WHERE id = ?").get(id);
+  return row ? row.goal_source : null;
+}
+
+// Seed or refine a thread's durable goal (#26). Trust guard: an agent-seeded goal
+// (source='agent') is authoritative and is written unconditionally; the observer
+// (source='observer') writes only when there's no agent goal already, so its inference can
+// sharpen an observer goal but never clobber a high-trust one. `framing` is the quoted moment
+// the goal was framed; it's stored once (first writer wins) as audit/eval fodder.
+export function setThreadGoal(db, id, { goal = undefined, framing = undefined, source = "observer" } = {}) {
+  if (goal === undefined || goal == null || String(goal).trim() === "") return false;
+  if (source !== "agent" && goalSource(db, id) === "agent") return false; // don't clobber the agent's goal
+  const cols = ["goal = ?", "goal_source = ?"];
+  const vals = [String(goal).trim(), source];
+  if (framing !== undefined && framing != null && String(framing).trim()) {
+    // First framing wins — keep the original birth moment even as the goal is refined.
+    const cur = db.prepare("SELECT goal_framing FROM threads WHERE id = ?").get(id);
+    if (!cur || !cur.goal_framing) {
+      cols.push("goal_framing = ?");
+      vals.push(String(framing).trim());
+    }
+  }
+  cols.push("updated_at = ?");
+  vals.push(now(), id);
+  db.prepare(`UPDATE threads SET ${cols.join(", ")} WHERE id = ?`).run(...vals);
+  return true;
+}
+
+// The trust level of a thread's current 'why' ('agent' beats 'observer').
+export function whySource(db, id) {
+  const row = db.prepare("SELECT why_source FROM threads WHERE id = ?").get(id);
+  return row ? row.why_source : null;
+}
+
+// Seed or refine a thread's 'why' (motivation/impact). Same trust guard as setThreadGoal.
+export function setThreadWhy(db, id, { why = undefined, source = "observer" } = {}) {
+  if (why === undefined || why == null || String(why).trim() === "") return false;
+  if (source !== "agent" && whySource(db, id) === "agent") return false;
+  db.prepare("UPDATE threads SET why = ?, why_source = ?, updated_at = ? WHERE id = ?").run(
+    String(why).trim(),
+    source,
+    now(),
+    id
+  );
+  return true;
+}
+
+// Seed a thread's genesis (founding decisions) once — first writer wins, so the birth context
+// isn't overwritten by later turns. Returns true if it was set.
+export function setThreadGenesis(db, id, genesis) {
+  if (!genesis || String(genesis).trim() === "") return false;
+  const cur = db.prepare("SELECT genesis FROM threads WHERE id = ?").get(id);
+  if (cur && cur.genesis) return false;
+  db.prepare("UPDATE threads SET genesis = ?, updated_at = ? WHERE id = ?").run(
+    String(genesis).trim(),
+    now(),
+    id
+  );
+  return true;
 }
 
 export function listThreads(db, repoId, { status = null } = {}) {
@@ -570,6 +680,81 @@ export function usageByDay(db, repoId, { days = 30 } = {}) {
         ORDER BY day DESC`
     )
     .all(repoId, `-${Math.max(0, days - 1)} days`);
+}
+
+// ---------------------------------------------------------------------------
+// Eval harness — raw session ledger + initiative trajectory snapshots
+// ---------------------------------------------------------------------------
+
+// Append one turn's untruncated digest to the raw ledger. Idempotent on (session_id, turn) so
+// a re-run of the same turn (or a retried hook) never double-writes.
+export function appendSessionLog(db, repoId, { sessionId, turn, cursorStart = null, digest }) {
+  if (!sessionId || !digest) return;
+  db.prepare(
+    `INSERT OR IGNORE INTO session_log
+       (repo_id, session_id, turn, cursor_start, digest, char_count, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(repoId, sessionId, Number(turn) || 0, cursorStart, digest, digest.length, now());
+}
+
+// Snapshot an initiative's current state (goal/why/genesis/summary + its event set) — the
+// librarian's trajectory at this turn. Reads live from the thread; call after synthesis.
+export function snapshotInitiative(db, repoId, threadId, { sessionId = null, turn = null } = {}) {
+  const t = getThread(db, threadId);
+  if (!t) return;
+  const events = db
+    .prepare("SELECT id FROM events WHERE thread_id = ? ORDER BY ts")
+    .all(threadId)
+    .map((r) => r.id);
+  db.prepare(
+    `INSERT INTO initiative_snapshots
+       (repo_id, thread_id, session_id, turn, goal, goal_source, why, genesis, summary,
+        event_count, event_ids, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    repoId,
+    threadId,
+    sessionId,
+    turn == null ? null : Number(turn),
+    t.goal || null,
+    t.goal_source || null,
+    t.why || null,
+    t.genesis || null,
+    t.summary || null,
+    events.length,
+    JSON.stringify(events),
+    now()
+  );
+}
+
+export function getSessionLog(db, sessionId) {
+  return db
+    .prepare("SELECT * FROM session_log WHERE session_id = ? ORDER BY turn")
+    .all(sessionId);
+}
+
+export function getSnapshotsForSession(db, sessionId) {
+  return db
+    .prepare("SELECT * FROM initiative_snapshots WHERE session_id = ? ORDER BY created_at")
+    .all(sessionId);
+}
+
+// Sessions the raw ledger knows about for a repo, most-recent first — for `pm-agent eval`'s
+// default target selection.
+export function listSessions(db, repoId, { limit = 20 } = {}) {
+  return db
+    .prepare(
+      `SELECT session_id,
+              COUNT(*)      AS turns,
+              MIN(created_at) AS first_ts,
+              MAX(created_at) AS last_ts
+         FROM session_log
+        WHERE repo_id = ?
+        GROUP BY session_id
+        ORDER BY last_ts DESC
+        LIMIT ?`
+    )
+    .all(repoId, limit);
 }
 
 // Grand totals over the whole recorded history for this repo.

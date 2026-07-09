@@ -198,14 +198,24 @@ function cmdInitiative(argv) {
   const db = S.openDb();
   const repo = requireRepo(db);
 
+  // Seed the durable goal/why on an initiative as HIGH-TRUST (source='agent') — the observer's
+  // inference will refine but never clobber these (#26).
+  const applyGoalWhy = (id) => {
+    if (typeof flags.goal === "string" && flags.goal.trim())
+      S.setThreadGoal(db, id, { goal: flags.goal, source: "agent" });
+    if (typeof flags.why === "string" && flags.why.trim())
+      S.setThreadWhy(db, id, { why: flags.why, source: "agent" });
+  };
+
   if (sub === "new") {
     const name = _.join(" ").trim();
-    if (!name) fail('pm-agent initiative new: need a name, e.g. initiative new "auth hardening" --issues 43,49');
+    if (!name) fail('pm-agent initiative new: need a name, e.g. initiative new "auth hardening" --goal "..." --issues 43,49');
     const issues = parseIssueList(flags.issues);
     const id = S.createThread(db, repo.id, {
       title: name,
       genesis: typeof flags.genesis === "string" ? flags.genesis : null,
     });
+    applyGoalWhy(id);
     for (const n of issues) S.pinIssueToThread(db, repo.id, n, id);
     if (flags.json) return print({ id, name, issues });
     process.stdout.write(dim(`initiative #${id} "${name}" · pinned ${issues.length} issue(s)\n`));
@@ -213,11 +223,13 @@ function cmdInitiative(argv) {
     const ref = (_.join(" ").trim() || (typeof flags.to === "string" ? flags.to : "")).trim();
     if (!ref) fail('pm-agent initiative add: name or id of the initiative, e.g. initiative add "auth hardening" --issues 12');
     const issues = parseIssueList(flags.issues);
-    if (!issues.length) fail("pm-agent initiative add: --issues is required");
     const id = S.resolveThread(db, repo.id, ref);
+    applyGoalWhy(id);
     for (const n of issues) S.pinIssueToThread(db, repo.id, n, id);
+    if (!issues.length && !flags.goal && !flags.why)
+      fail("pm-agent initiative add: give --issues, --goal, and/or --why");
     if (flags.json) return print({ id, issues });
-    process.stdout.write(dim(`pinned ${issues.length} issue(s) to initiative #${id}\n`));
+    process.stdout.write(dim(`updated initiative #${id}${issues.length ? ` · pinned ${issues.length} issue(s)` : ""}\n`));
   } else if (sub === "remove") {
     const issues = parseIssueList(flags.issues);
     if (!issues.length) fail("pm-agent initiative remove: --issues is required");
@@ -380,6 +392,9 @@ function cmdContext() {
   );
   lines.push(
     "If this repo has runnable services, keep `.pm/services.json` (repo root) current so the dashboard can start them — an array `services[]` of `{name, command, cwd, port, health|url}`. See `/pm:services`."
+  );
+  lines.push(
+    'An initiative is defined by its GOAL, not its title — the durable thing the work is trying to achieve. The moment the user frames a goal in conversation (usually before any issue or branch exists), seed it: `pm-agent initiative new "<short name>" --goal "<one-line durable goal>" --why "<why it matters>"`. As the work reveals more, refine the same initiative (`pm-agent initiative add "<name-or-id>" --goal "<sharpened goal>"`) — hold the durable goal steady while the approach evolves. Goals you seed this way are high-trust and are never overwritten by the automatic observer. Do this silently, as part of owning the ledger.'
   );
   lines.push(
     "Threads are also called initiatives — the higher-level buckets issues group into. When the user asks to (re)group issues (e.g. \"#43 and #49 should be an initiative about auth\"), act on it: create or extend the initiative and pin those issues with `pm-agent initiative new \"<name>\" --issues 43,49` or `pm-agent initiative add \"<name-or-id>\" --issues 12`. Pinned issues are locked — the automatic clusterer will never move them — so this is durable, not a one-off. Then be proactive: look over the other known issues, and if any clearly belong to that same initiative, add them too and tell the user which ones you pinned and why (undo with `pm-agent initiative remove --issues N`). Use `pm-agent initiative list --json` to see current groupings."
@@ -564,6 +579,7 @@ LEDGER COMMANDS
   issue-title <n> <t..>  Set the #-glossary title for an issue
   config [key] [value]   Get/set config (capture=observer|explicit; --global)
   context                Emit the SessionStart injection payload (used by the hook)
+  eval                   Grade live goal-first capture on a session (--session, --repo, --model, --out)
 `;
 
 export async function runLedger(cmd, argv) {
@@ -610,6 +626,11 @@ export async function runLedger(cmd, argv) {
       if (workerIdx !== -1) await observeWorker(argv[workerIdx + 1]);
       else observe();
       return;
+    }
+    case "eval": {
+      const { flags } = parseArgs(argv);
+      const { runEval } = await import("./eval.js");
+      return runEval(argv, flags);
     }
     case "ledger-help":
       return void process.stdout.write(LEDGER_HELP);

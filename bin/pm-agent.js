@@ -86,6 +86,7 @@ LEDGER COMMANDS (the observational timeline — see docs/ledger.md)
   initiative         Group issues by hand: new "<name>" --issues 43,49 | add | remove | list
   issue-title <n> …  Set the #-glossary title for an issue
   config [key] [val] capture=observer|explicit, etc.
+  eval               Grade live goal capture on a session (--session, --repo, --model, --out)
   serve              Serve the operator UI (--port)
 
 MISC
@@ -866,6 +867,7 @@ switch (cmd) {
   case "config":
   case "context":
   case "observe":
+  case "eval":
   case "ingest":
   case "refresh":
   case "synthesize":

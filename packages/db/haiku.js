@@ -8,7 +8,8 @@ import { execFileSync, spawn } from "node:child_process";
 import * as S from "./store.js";
 
 const HAIKU = "claude-haiku-4-5";
-const ARGS = (prompt) => ["-p", prompt, "--model", HAIKU, "--output-format", "json"];
+const JUDGE = "claude-opus-4-8"; // eval judge — needs more capability than the observer's Haiku
+const ARGS = (prompt, model = HAIKU) => ["-p", prompt, "--model", model, "--output-format", "json"];
 
 // Pull the model's text + usage out of the `--output-format json` envelope. Falls back to
 // treating the raw output as plain text if it isn't the expected JSON (older CLI, etc.).
@@ -38,6 +39,28 @@ export function runHaiku(prompt, cwd, { timeout = 60000, meter: m = null } = {})
       stdio: ["ignore", "pipe", "ignore"],
       timeout,
       maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, PM_AGENT_OBSERVING: "1" },
+    });
+    const { text, usage, cost } = parseResult(raw);
+    meter(m, usage, cost);
+    return text;
+  } catch {
+    return null;
+  }
+}
+
+// The eval judge: same headless `claude -p` path as runHaiku, but on a stronger model (Opus by
+// default) and a longer timeout, since it grades a whole session's ledger. Sets the same
+// PM_AGENT_OBSERVING guard so the judge's own Stop hook never re-enters the observer. Returns
+// the model's text (markdown report) or null. Metered as kind:'eval'.
+export function runJudge(prompt, cwd, { model = JUDGE, timeout = 180000, meter: m = null } = {}) {
+  try {
+    const raw = execFileSync("claude", ARGS(prompt, model), {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout,
+      maxBuffer: 16 * 1024 * 1024,
       env: { ...process.env, PM_AGENT_OBSERVING: "1" },
     });
     const { text, usage, cost } = parseResult(raw);

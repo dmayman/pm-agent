@@ -64,6 +64,13 @@ function buildThreadPrompt(db, repo, threadId) {
       ? `Context: ${thread.genesis}\n\n`
       : "";
 
+  // The durable goal (#26) anchors the summary. It's held in its own column and refined under a
+  // trust guard, so we hand it to the model verbatim and tell it to preserve — not re-derive —
+  // it, keeping the goal steady while the progress narrative around it evolves.
+  const goalBlock =
+    (thread.goal ? `Durable goal (preserve this verbatim as the Goal line — do NOT reword it): ${thread.goal}\n` : "") +
+    (thread.why ? `Why it matters: ${thread.why}\n` : "");
+
   // The issue roster with lifecycle status is what lets the summary say what's still open /
   // next; the work log carries what actually happened.
   const roster = issues.length
@@ -76,18 +83,23 @@ function buildThreadPrompt(db, repo, threadId) {
     : "";
 
   const prompt =
-    `You are writing the standing summary for one initiative — a group of related issues — ` +
-    `that a developer will skim weeks later to remember where things stand. Tell the WHOLE ` +
-    `story: what has happened and what is still left or coming next.\n\n` +
+    `You are writing the standing summary for one initiative — an arc of work defined by a ` +
+    `durable GOAL — that a developer will skim weeks later to remember where things stand. ` +
+    `Tell the WHOLE story as progress against that goal.\n\n` +
     `Write it in this exact shape:\n` +
     `1. A first sentence that is the headline — what this initiative is and its current state — ` +
     `wrapped in **double asterisks** so it renders bold.\n` +
-    `2. Then 1-3 more sentences of plain language: what has been accomplished so far, and — if any ` +
-    `issues above are not yet done — what's still open or next. If there is open or not-started ` +
-    `work, you MUST end by saying what's next.\n\n` +
+    `2. Then 1-3 more sentences of plain language covering, in order: the GOAL (what this is ` +
+    `trying to achieve), what's been TRIED or accomplished so far, and — if any issues above ` +
+    `are not yet done — what's DONE versus what's LEFT. If there is open or not-started work, ` +
+    `you MUST end by saying what's next.\n\n` +
     `Rules: plain, human language a non-technical person could follow. No file names, no commit ` +
-    `hashes, don't enumerate commits — synthesize the arc into its point.\n\n` +
+    `hashes, don't enumerate commits — synthesize the arc into its point. Hold the goal steady: ` +
+    `if a durable goal is given below, state it as the goal verbatim rather than re-deriving one ` +
+    `from recent events.\n\n` +
     `Initiative: ${thread.title}\n\n` +
+    goalBlock +
+    (goalBlock ? "\n" : "") +
     roster +
     context +
     log +
