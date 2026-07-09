@@ -396,7 +396,10 @@ async function writeApi(db, repo, url, body, serverPort) {
   if (p === "/api/preview/link" || p === "/api/preview/unlink") {
     const cli = path.join(repo.root, "bin", "pm-agent.js");
     if (!existsSync(cli)) return { __status: 400, error: "not a pm-agent checkout" };
-    if (p === "/api/preview/link" && !livePreview()) return { __status: 409, error: "no preview is running" };
+    // A preview must exist to link onto — but when THIS server IS the preview, livePreview() is
+    // null by design, so accept PM_AGENT_PREVIEW too (the CLI reads the real-home rendezvous).
+    if (p === "/api/preview/link" && !livePreview() && process.env.PM_AGENT_PREVIEW !== "1")
+      return { __status: 409, error: "no preview is running" };
     const flag = p === "/api/preview/link" ? "--link" : "--unlink";
     const child = spawn(process.execPath, [cli, "preview", flag], {
       cwd: repo.root,

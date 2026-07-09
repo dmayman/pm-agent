@@ -229,7 +229,7 @@ const state = {
   wt: {
     openMenu:null, editCmd:null, error:null, mergedOpen:false, busy:new Set(),
     // the ONE preview slot, for repos opted into the restricted Primary/Preview layout (below).
-    preview: { branch:null, status:"idle", url:null, error:null, pollTimer:null, hydrated:false, lastSyncedAt:null },
+    preview: { branch:null, status:"idle", url:null, error:null, pollTimer:null, hydrated:false, lastSyncedAt:null, self:false },
     captureLink: null,       // /api/worktrees .captureLink — is the hook capture routed onto a preview?
     clPollTimer: null,       // re-poll timer after a link/unlink (npm link is slow to settle)
   },
@@ -1041,6 +1041,7 @@ function wtpSlotPill(b, baseName, menuOpen){
 // state instead of a per-worktree dev server's.
 function previewStatusHtml(){
   const p = state.wt.preview;
+  if(p.self) return ""; // on the preview itself, the top banner already says so — no self-link
   if(p.status === "launching"){
     return `<div class="wtp-run starting"><span class="wtp-spin"></span>`
       + `<span class="wtp-starting">launching preview…</span></div>`;
@@ -1061,6 +1062,7 @@ function previewStatusHtml(){
 // while it's still launching or errored.
 function previewSyncHtml(){
   const p = state.wt.preview;
+  if(p.self) return ""; // resync relaunches the preview from the real observer — not from itself
   if(p.status !== "ready") return "";
   const busy = state.wt.busy.has("pv-reseed");
   const label = p.lastSyncedAt ? "Last synced " + syncAgo(p.lastSyncedAt) : "Never synced";
@@ -1650,6 +1652,19 @@ async function loadMeta(){
 // top-right environment switch that toggles prod ↔ preview.
 function applyPreviewChrome(preview){
   state.preview = preview || null;
+  // When THIS dashboard IS the preview, its own branch never comes back through the preview-slot
+  // machinery (livePreview() is null on the preview by design). Seed the slot from the self-info so
+  // the previewed branch's row shows its Preview pill + the capture-link control, matching prod.
+  const pv = state.wt.preview;
+  if(preview && preview.self){
+    pv.self = true;
+    pv.branch = preview.branch || null;
+    pv.status = "ready";
+    pv.url = location.origin;
+    repaintPanel(); // no-ops until the panel has data; reflects the seeded slot once it does
+  }else{
+    pv.self = false;
+  }
   let banner = $("#previewBanner");
   if(preview && preview.self){
     document.body.classList.add("preview-mode");
