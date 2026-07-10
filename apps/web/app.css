@@ -727,6 +727,22 @@ a.ref:hover .k{ color:var(--ink-mute); }
 .wtp-svc-nudge code{ font-family:var(--mono); font-size:9.5px; color:var(--ink-mute);
   background:var(--bg-2); padding:0 3px; border-radius:4px; }
 
+/* Remote services (hosted infra) — the repo-level section below the branch list. Read-only:
+   status dot, name + provider, deployed branch, and links to the console + the live service. */
+.wtp-remote{ margin-top:12px; padding-top:10px; border-top:1px solid var(--line); }
+.wtp-remote-head{ display:flex; align-items:center; gap:6px; margin-bottom:6px;
+  font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-mute); }
+.wtp-remote-head .icon{ width:12px; height:12px; }
+/* An unreachable remote reuses the blocked/rust tone; an unprobed/declared one stays neutral grey. */
+.wtp-svc-dot.down{ background:var(--t-blocked); }
+.wtp-svc-dot.unprobed{ background:var(--ink-whisper); }
+.wtp-rsvc-prov{ flex:none; font-family:var(--mono); font-size:9px; letter-spacing:.02em;
+  color:var(--ink-whisper); text-transform:uppercase; }
+.wtp-rsvc-branch{ flex:none; display:inline-flex; align-items:center; gap:2px;
+  font-family:var(--mono); font-size:9px; color:var(--ink-mute); }
+.wtp-rsvc-branch .icon{ width:10px; height:10px; opacity:.7; }
+.wtp-rsvc.down .wtp-svc-name{ color:var(--ink-dim); }
+
 .wtp-editor{ display:flex; gap:6px; }
 .wtp-input{ flex:1; min-width:0; font-family:var(--mono); font-size:10.5px; color:var(--ink);
   background:var(--bg); border:1px solid var(--line-strong); border-radius:7px; padding:5px 8px; }
