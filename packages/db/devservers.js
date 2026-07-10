@@ -72,9 +72,11 @@ export function trackedServiceNames(worktreePath) {
   return names;
 }
 
-// Start a named service in a worktree. `service = {name, command, cwd, port}` — cwd is resolved
-// relative to the worktree root (default "."). Reuses the shared spawn options and the grace
-// window that surfaces a fast-failing command's real error + log tail instead of a false success.
+// Start a named service in a worktree. `service = {name, command, cwd, port, env}` — cwd is resolved
+// relative to the worktree root (default "."). `env` is an optional map merged over the child's env
+// (used to inject the per-worktree effective port, e.g. { APP_DB_PORT: "5532", PM_PORT_OFFSET: "100" }
+// — see serviceLaunchEnv in worktrees.js). Reuses the shared spawn options and the grace window that
+// surfaces a fast-failing command's real error + log tail instead of a false success.
 export async function startService(worktreePath, service) {
   const name = (service && service.name) || DEFAULT_SERVICE;
   const command = service && service.command;
@@ -97,11 +99,12 @@ export async function startService(worktreePath, service) {
     // detached:true puts the child in its own process group so a later kill(-pid) takes the
     // whole tree (npm -> node -> …), not just the shim.
     const loginShell = process.env.SHELL || "/bin/zsh";
+    const env = service && service.env ? { ...childEnv(), ...service.env } : childEnv();
     proc = spawn(loginShell, ["-lc", command], {
       cwd,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
-      env: childEnv(),
+      env,
     });
   } catch (err) {
     return { ok: false, error: String(err && err.message) };

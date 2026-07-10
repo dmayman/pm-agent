@@ -17,6 +17,10 @@ import {
   readServices,
   createWorktree,
   checkoutBranch,
+  worktreeSlot,
+  portStride,
+  serviceLaunchEnv,
+  effectivePort,
 } from "../../packages/db/worktrees.js";
 import {
   startDevServer,
@@ -98,6 +102,14 @@ function livePreview() {
     /* no preview running — the common case */
   }
   return null;
+}
+
+// A worktree's instance slot, computed with the SAME hidden-tree exclusion the /api/worktrees
+// report uses (the live preview tree), so the offset a service launches with matches the port the
+// panel shows for it.
+function slotFor(repo, worktreePath) {
+  const lp = livePreview();
+  return worktreeSlot(repo, worktreePath, { excludePaths: lp && lp.tree ? [lp.tree] : undefined });
 }
 
 // Is the rendezvous'd preview's HTTP server actually answering yet? The rendezvous file appears
@@ -476,13 +488,17 @@ async function writeApi(db, repo, url, body, serverPort) {
         return { __status: 404, error: `no service "${b.name}" in .pm/services.json` };
       }
     }
-    return await startService(b.worktree, service);
+    // Inject the per-worktree effective port so a non-primary worktree binds a distinct port.
+    const slot = slotFor(repo, b.worktree);
+    return await startService(b.worktree, { ...service, env: serviceLaunchEnv(service, slot, portStride(repo)) });
   }
   if (p === "/api/service/stop") {
     if (!b.worktree || !b.name) return { __status: 400, error: "worktree and name required" };
     const { services } = readServices(b.worktree);
     const svc = services && services.find((s) => s.name === b.name);
-    const pids = listenerPidsFor(repo, b.worktree, svc ? svc.port : null, serverPort);
+    // The listener lives on the effective (offset) port for this worktree, not the declared one.
+    const eff = svc ? effectivePort(svc.port, slotFor(repo, b.worktree), portStride(repo)) : null;
+    const pids = listenerPidsFor(repo, b.worktree, eff, serverPort);
     return stopService(b.worktree, b.name, pids);
   }
   if (p === "/api/services/start-all") {
@@ -490,18 +506,21 @@ async function writeApi(db, repo, url, body, serverPort) {
     const { services, error } = readServices(b.worktree);
     if (error) return { __status: 400, error };
     if (!services || !services.length) return { __status: 400, error: "no services declared" };
-    // One scan up front tells us which declared ports are already listening.
+    const slot = slotFor(repo, b.worktree);
+    const stride = portStride(repo);
+    // One scan up front tells us which effective ports are already listening.
     const report = worktreeReport(repo, { skipPid: process.pid, skipPort: serverPort });
     const wt = report.worktrees.find((w) => w.path === b.worktree);
     const livePorts = new Set((wt ? wt.servers : []).map((s) => s.port));
     const results = [];
     for (const s of services) {
+      const eff = effectivePort(s.port, slot, stride);
       const trackedLive = (() => { const t = serviceStatus(b.worktree, s.name); return t && !t.exited; })();
-      if ((s.port != null && livePorts.has(s.port)) || trackedLive) {
+      if ((eff != null && livePorts.has(eff)) || trackedLive) {
         results.push({ name: s.name, ok: true, already: true });
         continue;
       }
-      const r = await startService(b.worktree, s);
+      const r = await startService(b.worktree, { ...s, env: serviceLaunchEnv(s, slot, stride) });
       results.push({ name: s.name, ...r });
     }
     return { ok: results.every((r) => r.ok !== false), results };
@@ -509,6 +528,8 @@ async function writeApi(db, repo, url, body, serverPort) {
   if (p === "/api/services/stop-all") {
     if (!b.worktree) return { __status: 400, error: "worktree required" };
     const { services } = readServices(b.worktree);
+    const slot = slotFor(repo, b.worktree);
+    const stride = portStride(repo);
     const report = worktreeReport(repo, { skipPid: process.pid, skipPort: serverPort });
     const wt = report.worktrees.find((w) => w.path === b.worktree);
     // Everything declared, plus anything we're still tracking that isn't declared anymore.
@@ -517,8 +538,9 @@ async function writeApi(db, repo, url, body, serverPort) {
     const results = [];
     for (const name of names) {
       const svc = (services || []).find((s) => s.name === name);
-      const pids = svc && svc.port != null && wt
-        ? wt.servers.filter((s) => s.port === svc.port).map((s) => s.pid).filter(Boolean)
+      const eff = svc ? effectivePort(svc.port, slot, stride) : null;
+      const pids = eff != null && wt
+        ? wt.servers.filter((s) => s.port === eff).map((s) => s.pid).filter(Boolean)
         : [];
       results.push({ name, ...stopService(b.worktree, name, pids) });
     }
