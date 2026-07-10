@@ -6,7 +6,7 @@
 // (worktree add / branch switch) return {ok, error} with git's stderr surfaced.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { serviceStatus } from "./devservers.js";
 
@@ -458,24 +458,28 @@ export function worktreeReport(repo, { skipPid, skipPort, devCommand, excludePat
 }
 
 // ---- write ops -------------------------------------------------------------
-// A filesystem-safe leaf for a worktree dir made from a branch name (feature/x -> feature-x).
-function slugForBranch(branch) {
-  return String(branch).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "wt";
-}
-
-// Where a new worktree for `branch` lands: sibling of the main checkout, ../<repo>-<branch>.
-export function worktreePathFor(root, branch) {
+// Where a new worktree lands: a generic numbered sibling of the main checkout — ../<repo>-1,
+// ../<repo>-2, … — NOT a folder named after whatever branch first populates it. A worktree is a
+// durable numbered workspace (matching the port "slot" model: main = 0, extra trees 1, 2, …) that
+// branches move THROUGH (see checkoutBranch), so its folder name shouldn't be tied to one branch.
+// Pick the smallest n≥1 whose dir is free both on disk and among registered worktrees, so removing
+// one slot never renumbers the others.
+export function worktreePathFor(root) {
   const parent = path.dirname(root);
   const repoName = path.basename(root);
-  return path.join(parent, repoName + "-" + slugForBranch(branch));
+  const taken = new Set(parseWorktrees(root).map((w) => w.path));
+  for (let n = 1; ; n++) {
+    const dest = path.join(parent, repoName + "-" + n);
+    if (!taken.has(dest) && !existsSync(dest)) return dest;
+  }
 }
 
-// `git worktree add <path> <branch>` — checks the existing branch out into a fresh worktree.
+// `git worktree add <path> <branch>` — checks the existing branch out into a fresh numbered worktree.
 export function createWorktree(repo, branch) {
   const root = repo && repo.root;
   if (!root) return { ok: false, error: "no repo root" };
   if (!branch) return { ok: false, error: "no branch given" };
-  const dest = worktreePathFor(root, branch);
+  const dest = worktreePathFor(root);
   const r = gitWrite(["worktree", "add", dest, branch], root);
   return r.ok ? { ok: true, path: dest } : r;
 }

@@ -382,6 +382,9 @@ function cmdContext() {
     "If this repo has runnable services, keep `.pm/services.json` (repo root) current so the dashboard can start them — an array `services[]` of `{name, command, cwd, port, health|url}`. See `/pm:services`."
   );
   lines.push(
+    "When you create a git worktree by hand, name it as a generic numbered sibling of the main checkout — `../<repo>-1`, `../<repo>-2` (the next free number) — never after the branch you happen to be checking out. A worktree is a durable numbered workspace that branches move through, matching the dashboard's port-slot model (main = 0, extra trees 1, 2, …); the dashboard's `+ worktree` button already names them this way."
+  );
+  lines.push(
     "Threads are also called initiatives — the higher-level buckets issues group into. When the user asks to (re)group issues (e.g. \"#43 and #49 should be an initiative about auth\"), act on it: create or extend the initiative and pin those issues with `pm-agent initiative new \"<name>\" --issues 43,49` or `pm-agent initiative add \"<name-or-id>\" --issues 12`. Pinned issues are locked — the automatic clusterer will never move them — so this is durable, not a one-off. Then be proactive: look over the other known issues, and if any clearly belong to that same initiative, add them too and tell the user which ones you pinned and why (undo with `pm-agent initiative remove --issues N`). Use `pm-agent initiative list --json` to see current groupings."
   );
   if (mode === "explicit") {
