@@ -24,9 +24,9 @@ app servers, but the backing infrastructure they can't run without. Look at:
 ```json
 {
   "services": [
-    { "name": "App DB", "command": "docker compose up", "cwd": ".", "port": 5432 },
-    { "name": "API", "command": "pnpm --filter @acme/app dev", "cwd": ".", "port": 8787, "health": "/health" },
-    { "name": "Operator UI", "command": "pnpm dev:operator", "cwd": ".", "port": 5173, "url": "http://localhost:5173" }
+    { "name": "App DB", "command": "docker compose up", "cwd": ".", "port": 5432, "portEnv": "APP_DB_PORT" },
+    { "name": "API", "command": "pnpm --filter @acme/app dev", "cwd": ".", "port": 8787, "health": "/health", "portEnv": "API_PORT" },
+    { "name": "Operator UI", "command": "pnpm dev:operator", "cwd": ".", "port": 5173, "url": "http://localhost:5173", "portEnv": "OPERATOR_PORT" }
   ]
 }
 ```
@@ -40,6 +40,51 @@ Fields:
   tracked as "running" while this dashboard's own process supervises them.
 - `health` (optional) — a path like `/health`; the open-link becomes `localhost:{port}{health}`.
 - `url` (optional) — overrides the open-link entirely (default `http://localhost:{port}`).
+- `portEnv` (optional but **strongly recommended** — see "Make services relocatable" below) —
+  the env var pm-agent sets to this service's *effective* port when it launches the service, so
+  a second worktree of the same repo runs on a shifted port instead of colliding. Only useful if
+  the `command` (or the config it reads) actually consumes that env var.
+
+**Make services relocatable (so two worktrees run at once).** pm-agent's worktree panel makes
+checking a branch out into a second worktree a single click, and its preview env runs another
+copy of the repo — so *two checkouts of this repo commonly run at the same time*. But
+`.pm/services.json` is checked in and identical across branches, so without help every worktree
+declares the **same** ports and they collide: only one can bind `:5432`/`:8787`/`:5173`, and the
+dashboard can't tell them apart. pm-agent solves this by giving each worktree a stable **slot**
+(the primary checkout is slot 0; the next worktree slot 1, and so on) and shifting every declared
+port by `slot × 100`. Your job is to make the repo's services *honor that shift* so the second
+worktree comes up cleanly on `:5532`/`:8887`/`:5273`.
+
+How pm-agent hands you the offset when it launches a service — three env vars, always set:
+- `PM_SLOT` — the worktree's slot (0 for the primary; 1, 2, … for extra worktrees).
+- `PM_PORT_OFFSET` — `slot × stride` (e.g. `100`). **Uniform across every service in that
+  worktree**, so any service can reach a sibling at `sibling_base_port + PM_PORT_OFFSET`.
+- `<portEnv>` — the service's own *effective* port (`port + PM_PORT_OFFSET`), but only if you
+  declared a `portEnv` for it. This is the ergonomic handle: name it, then make the command bind it.
+
+To wire a service, do BOTH:
+1. **Declare `portEnv`** on the service (e.g. `"portEnv": "API_PORT"`).
+2. **Make its command bind that env var**, falling back to the base port so a plain checkout with
+   no offset still works. Adapt to how each tool takes a port:
+   - **Vite / Next / most dev servers** — a `--port` flag: `vite --port ${OPERATOR_PORT:-5173}`.
+   - **docker-compose** — interpolate the host port in the mapping:
+     `ports: ["${APP_DB_PORT:-5432}:5432"]` (the *container* port stays fixed; only the host port
+     shifts). The `command` stays `docker compose up`; pm-agent's injected env reaches compose.
+   - **Wrangler** — `wrangler dev --port ${API_PORT:-8787}`.
+   - **A framework that only reads `PORT`** — set it inline: `PORT=${API_PORT:-3000} npm start`.
+3. **Fix cross-service references with `PM_PORT_OFFSET`.** If the API connects to the DB, in a
+   shifted worktree the DB is on `5432 + PM_PORT_OFFSET`, so the API's connection string must
+   shift too — e.g. run it as
+   `DATABASE_URL="postgres://localhost:$((5432 + ${PM_PORT_OFFSET:-0}))/app" pnpm --filter @acme/app dev`.
+   Because `PM_PORT_OFFSET` is the same for every service in the worktree, this always points at
+   the sibling that's actually running alongside it.
+
+Prefer editing the repo's own config to read these env vars (a `vite.config` reading
+`process.env.OPERATOR_PORT`, a compose file with `${APP_DB_PORT:-5432}`, an `.env` default) over
+cramming everything into the `command` string — but either works. Leave the base ports as the
+no-offset default everywhere, so slot 0 and any non-pm-agent run are unchanged. If a service
+genuinely can't be relocated, still declare `portEnv` and note the limitation to the user;
+single-worktree use is unaffected either way.
 
 Guidance:
 - **Assume a cold machine — nothing is already running.** The whole point is that the user
