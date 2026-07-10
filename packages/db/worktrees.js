@@ -146,6 +146,10 @@ export function readServices(worktreePath) {
       command: s.command,
       cwd: typeof s.cwd === "string" && s.cwd.trim() ? s.cwd : ".",
       port: Number.isFinite(s.port) ? Number(s.port) : null,
+      // The env var pm-agent sets to the service's *effective* (offset) port at launch, so a
+      // non-primary worktree binds a distinct port. The command/compose file must read it
+      // (e.g. `vite --port $OPERATOR_PORT`, `${APP_DB_PORT:-5432}:5432`). Null = not parameterized.
+      portEnv: typeof s.portEnv === "string" && s.portEnv.trim() ? s.portEnv.trim() : null,
       health: typeof s.health === "string" && s.health.trim() ? s.health : null,
       url: typeof s.url === "string" && s.url.trim() ? s.url : null,
     });
@@ -174,6 +178,66 @@ export function readPmConfig(root) {
   }
 }
 
+// ---- per-worktree port offset ("instance slots") --------------------------
+// Two worktrees of the same repo declare the SAME checked-in ports (.pm/services.json is identical
+// across branches), so their services would collide and can't run at once. We give each worktree a
+// stable "slot" — its index in `git worktree list` order (the main worktree is always slot 0) — and
+// shift every declared port by `slot * stride`. Slot 0 uses ports exactly as declared (the primary
+// keeps canonical ports); slot 1 gets +stride, slot 2 +2*stride, and so on. The offset is injected
+// into the launched process via each service's `portEnv` (see serviceLaunchEnv), reflected in the
+// panel, and used for liveness/stop — so the two trees run independently.
+export const DEFAULT_PORT_STRIDE = 100;
+
+// The ordered, visible worktrees (bare + hidden/preview trees dropped) — the single ordering that
+// both worktreeReport and worktreeSlot index into, so a slot never drifts between them.
+function visibleWorktrees(root, hidden) {
+  const skip = hidden instanceof Set ? hidden : new Set(hidden || []);
+  return parseWorktrees(root).filter((w) => !w.bare && !skip.has(w.path));
+}
+
+// The per-repo port stride, overridable via .pm/config.json { "portStride": <n> }; default 100.
+export function portStride(repo) {
+  const cfg = readPmConfig((repo && repo.root) || "");
+  const n = Number(cfg.portStride);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_PORT_STRIDE;
+}
+
+// A worktree's stable slot: its position in the visible worktree ordering (main = 0). `excludePaths`
+// must match what worktreeReport was given (e.g. the hidden preview tree) so the numbering agrees.
+export function worktreeSlot(repo, worktreePath, { excludePaths } = {}) {
+  const root = repo && repo.root;
+  if (!root) return 0;
+  const idx = visibleWorktrees(root, excludePaths).findIndex((w) => w.path === worktreePath);
+  return idx < 0 ? 0 : idx;
+}
+
+// The effective (offset) port for a declared base port at a given slot. Port-less stays null.
+export function effectivePort(basePort, slot, stride) {
+  if (basePort == null) return null;
+  return basePort + (slot || 0) * (stride || DEFAULT_PORT_STRIDE);
+}
+
+// The env pm-agent injects when launching a service in a slot: always PM_SLOT/PM_PORT_OFFSET (so a
+// multi-port command like docker-compose can offset several ports generically), plus the service's
+// own portEnv bound to its effective port when both are present.
+export function serviceLaunchEnv(service, slot, stride) {
+  const offset = (slot || 0) * (stride || DEFAULT_PORT_STRIDE);
+  const env = { PM_SLOT: String(slot || 0), PM_PORT_OFFSET: String(offset) };
+  const eff = effectivePort(service && service.port, slot, stride);
+  if (service && service.portEnv && eff != null) env[service.portEnv] = String(eff);
+  return env;
+}
+
+// The reachable URL for a service at its effective port: rewrite the declared url's port when it
+// carries the base port, else synthesize from the effective port + health path.
+function effectiveUrl(declaredUrl, basePort, eff, health) {
+  if (eff == null) return declaredUrl || null;
+  if (declaredUrl && basePort != null && declaredUrl.includes(":" + basePort))
+    return declaredUrl.replace(":" + basePort, ":" + eff);
+  if (declaredUrl) return declaredUrl;
+  return "http://localhost:" + eff + (health || "");
+}
+
 // Enrich one declared service with its live state, from (a) a global scan of listening ports and
 // (b) this process's own registry for services we launched. Port-detected liveness wins; a
 // service we spawned but that hasn't bound its port yet reads as "starting"; a port-less service
@@ -183,29 +247,32 @@ export function readPmConfig(root) {
 // (`listeningByPort`) rather than only a process whose cwd sits under the worktree. Docker/Colima
 // publish a container's port via a proxy/ssh-forward process whose cwd is elsewhere, so the
 // cwd-attribution used for auto-discovered servers would never mark a containerized DB live.
-function enrichService(wt, s, listeningByPort) {
+function enrichService(wt, s, listeningByPort, offset = 0) {
+  const eff = s.port != null ? s.port + offset : null;
   const out = {
     name: s.name,
     command: s.command,
     cwd: s.cwd,
-    port: s.port,
+    port: eff, // the *effective* (offset) port — what actually runs and what the panel shows
+    basePort: s.port, // the declared port, before the per-worktree offset
+    portEnv: s.portEnv,
     health: s.health,
     url: s.url,
     state: "stopped",
     pid: null,
     liveUrl: null,
   };
-  const listenPid = s.port != null && listeningByPort ? listeningByPort.get(s.port) : undefined;
+  const listenPid = eff != null && listeningByPort ? listeningByPort.get(eff) : undefined;
   const tracked = serviceStatus(wt.path, s.name);
   if (listenPid !== undefined) {
     out.state = "live";
     out.pid = listenPid;
-    out.liveUrl = s.url || "http://localhost:" + s.port + (s.health || "");
+    out.liveUrl = effectiveUrl(s.url, s.port, eff, s.health);
   } else if (tracked && !tracked.exited) {
     // We launched it and it's still alive. With a port it's booting (not yet bound); without a
     // port there's nothing to bind so treat "still running" as live.
     out.pid = tracked.pid;
-    if (s.port != null) {
+    if (eff != null) {
       out.state = "starting";
     } else {
       out.state = "live";
@@ -291,9 +358,12 @@ export function worktreeReport(repo, { skipPid, skipPort, devCommand, excludePat
   // Hidden worktrees (e.g. the preview environment's dedicated tree) are dropped entirely, so
   // they never surface in the panel and don't claim a branch's worktreePath.
   const hidden = new Set(excludePaths || []);
-  const raw = parseWorktrees(root).filter((w) => !w.bare && !hidden.has(w.path));
+  const raw = visibleWorktrees(root, hidden);
   const branchToWorktree = new Map(); // branch name -> worktree path
   for (const w of raw) if (w.branch) branchToWorktree.set(w.branch, w.path);
+
+  const config = readPmConfig(root);
+  const stride = portStride(repo);
 
   const worktrees = raw.map((w, i) => {
     const rev = w.branch ? "refs/heads/" + w.branch : w.head || "HEAD";
@@ -305,6 +375,10 @@ export function worktreeReport(repo, { skipPid, skipPort, devCommand, excludePat
       detached: w.detached,
       isMain: i === 0,
       isCurrent: w.path === root,
+      // Stable instance slot (main = 0). Every declared port shifts by slot*stride so sibling
+      // worktrees run on distinct ports; slot 0 keeps the canonical ports.
+      slot: i,
+      portOffset: i * stride,
       head: ci.short,
       subject: ci.subject,
       committedAt: ci.committedAt,
@@ -338,7 +412,7 @@ export function worktreeReport(repo, { skipPid, skipPort, devCommand, excludePat
     const svc = readServices(wt.path);
     wt.servicesError = svc.error || null;
     wt.servicesDeclared = Array.isArray(svc.services) && svc.services.length > 0;
-    wt.services = (svc.services || []).map((s) => enrichService(wt, s, listeningByPort));
+    wt.services = (svc.services || []).map((s) => enrichService(wt, s, listeningByPort, wt.portOffset));
   }
 
   // Which branches are merged into the default — those with no worktree are "closed".
@@ -378,10 +452,9 @@ export function worktreeReport(repo, { skipPid, skipPort, devCommand, excludePat
     return String(b.committedAt || "").localeCompare(String(a.committedAt || ""));
   });
 
-  const config = readPmConfig(root);
   const worktreePanel = config.worktreePanel === "primary-preview" ? "primary-preview" : null;
 
-  return { defaultBranch: baseName || null, worktrees, branches, serverScanned, worktreePanel };
+  return { defaultBranch: baseName || null, worktrees, branches, serverScanned, worktreePanel, portStride: stride };
 }
 
 // ---- write ops -------------------------------------------------------------
