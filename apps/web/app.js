@@ -927,7 +927,12 @@ function servicesControl(wt, runOpen){
     if(!allUp) foot += `<button class="wtp-btn wtp-svc-all run" data-act="svc-start-all" data-wt="${esc(wt.path)}" ${busyAll ? "disabled" : ""}>${icon("play")}<span>Start all</span></button>`;
     if(anyUp) foot += `<button class="wtp-btn stop wtp-svc-all" data-act="svc-stop-all" data-wt="${esc(wt.path)}" ${busyAll ? "disabled" : ""}>Stop all</button>`;
     foot += `</div>`;
-    return `<div class="wtp-svcs">${rows}${foot}</div>`;
+    // Non-primary worktrees run on shifted ports so two trees don't collide — say so, since the
+    // ports shown won't match the checked-in .pm/services.json.
+    const offNote = wt.portOffset > 0
+      ? `<div class="wtp-svc-offset" title="This worktree is instance slot ${wt.slot}: every declared port is shifted +${wt.portOffset} so it runs independently of the primary worktree.">ports +${wt.portOffset}</div>`
+      : "";
+    return `<div class="wtp-svcs">${offNote}${rows}${foot}</div>`;
   }
   // no manifest — the backward-compatible single Run control, plus a gentle nudge
   return runControl(wt, runOpen)
