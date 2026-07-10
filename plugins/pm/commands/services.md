@@ -62,6 +62,11 @@ How pm-agent hands you the offset when it launches a service — three env vars,
 - `<portEnv>` — the service's own *effective* port (`port + PM_PORT_OFFSET`), but only if you
   declared a `portEnv` for it. This is the ergonomic handle: name it, then make the command bind it.
 
+pm-agent runs every `command` through your **login shell** (`$SHELL`, e.g. `zsh -lc`), so you can
+rely on shell features directly in the command string: arithmetic (`$(( 5432 + PM_PORT_OFFSET ))`),
+default expansion (`${API_PORT:-8787}`), conditionals, and `&&` chaining all work — no need to guess
+whether the string is shell-evaluated.
+
 To wire a service, do BOTH:
 1. **Declare `portEnv`** on the service (e.g. `"portEnv": "API_PORT"`).
 2. **Make its command bind that env var**, falling back to the base port so a plain checkout with
@@ -70,6 +75,11 @@ To wire a service, do BOTH:
    - **docker-compose** — interpolate the host port in the mapping:
      `ports: ["${APP_DB_PORT:-5432}:5432"]` (the *container* port stays fixed; only the host port
      shifts). The `command` stays `docker compose up`; pm-agent's injected env reaches compose.
+     **Also drop any pinned `container_name`** (and named/host-path `volumes` that hard-code a
+     name): two worktrees would collide on that identical name even with distinct ports. Compose
+     auto-namespaces containers, networks, and anonymous volumes by the project directory, so
+     removing `container_name` lets a second worktree's stack come up cleanly. If you truly need a
+     stable name, suffix it — `container_name: acme-db-${APP_DB_PORT:-5432}`.
    - **Wrangler** — `wrangler dev --port ${API_PORT:-8787}`.
    - **A framework that only reads `PORT`** — set it inline: `PORT=${API_PORT:-3000} npm start`.
 3. **Fix cross-service references with `PM_PORT_OFFSET`.** If the API connects to the DB, in a
