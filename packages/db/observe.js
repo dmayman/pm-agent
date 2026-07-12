@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync } from "
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import * as S from "./store.js";
-import { runHaiku } from "./haiku.js";
+import { runHaiku, runHaikuOnce } from "./haiku.js";
 
 const MIN_DIGEST_CHARS = 200; // below this there's nothing worth distilling
 const MAX_DIGEST_CHARS = 8000; // keep Haiku's input cheap; take the tail if larger
@@ -75,7 +75,9 @@ function buildPrompt(digest, initiatives) {
 
    Emit a SEPARATE goal entry ONLY for a durable goal with its OWN done-signal — a ticket, a distinct workstream, or a shippable outcome that can independently be called finished. A step taken WITHIN a goal (e.g. "run the test suite", "enrich one issue") is an EVENT, not a goal. Apply this test to avoid over-fragmenting: if it has no independent done-signal, it is not its own goal.
 
-   A normal session that advances one initiative yields EXACTLY ONE entry. A planning / retro / triage session whose product is several distinct workstreams (e.g. "three action priorities + file two new issues + a discovery ticket") yields SEVERAL — one per workstream. Returning a single-element array is the common case; an empty array is allowed only if the excerpt truly frames no goal (rare).
+   TITLES — every NEW goal ("isNew": true) MUST get its OWN distinct, specific short title. Do NOT file multiple new goals under a single existing umbrella/surface title — that silently collapses them back into one initiative. Reuse an EXACT existing title ONLY when "isNew": false, i.e. the goal genuinely advances that initiative. Example: in a retro that frames "reviewable set_plan diffs" AND "fix the deterministic duplicate-row projection", those are TWO separate new initiatives with two distinct titles (e.g. "Reviewable set_plan diffs" and "Deterministic duplicate-row cleanup") — NOT two goals both titled "Plan Model & Execution".
+
+   A normal session that advances one initiative yields EXACTLY ONE entry. A planning / retro / triage session whose product is several distinct workstreams (e.g. "three action priorities + file two new issues + a discovery ticket") yields SEVERAL — one per workstream, each with its own distinct title. Returning a single-element array is the common case; an empty array is allowed only if the excerpt truly frames no goal (rare).
 
 2) EVENTS — Extract ONLY the meaningful, timeline-worthy events — decisions made, build/test/review milestones reached, followups taken on, and loose ends explicitly deferred. Skip routine chatter, tool mechanics, and anything trivial. Most excerpts yield 0-3 events; an empty array is correct and expected when nothing notable happened.
 
@@ -254,10 +256,23 @@ export async function applyCapture(
   // Goal-first capture (#26/#36): seed/refine each initiative's durable goal from what this
   // session pursues, before any events. resolveThread creates the initiative by title when it's
   // new; setThreadGoal's trust guard refines an observer goal but never clobbers an agent one.
+  // Guard against same-title collapse: if two goals in ONE batch resolve to the same thread id
+  // (e.g. the model filed two new workstreams under one umbrella title), the second setThreadGoal
+  // would silently overwrite the first and lose a workstream. Keep the first, warn, drop the rest
+  // — the prompt is told to give each new goal a distinct title, so this only fires on model drift.
+  const seededThisBatch = new Set();
   for (const g of goals) {
     if (!g || !g.text || !g.initiative) continue;
     const gid = S.resolveThread(db, repo.id, String(g.initiative));
     if (!gid) continue;
+    if (seededThisBatch.has(gid)) {
+      process.stderr.write(
+        `warning: two goals in one turn resolved to the same initiative "${g.initiative}" (#${gid}); ` +
+          `keeping the first, dropping: ${g.text}\n`
+      );
+      continue;
+    }
+    seededThisBatch.add(gid);
     S.setThreadGoal(db, gid, { goal: g.text, framing: g.framing, source: "observer" });
     if (g.framing) S.setThreadGenesis(db, gid, String(g.framing));
     touched.add(gid);
@@ -390,34 +405,43 @@ export function replay(flags = {}) {
   let totalGoals = 0;
   let totalEvents = 0;
   let processed = 0;
+  let dropped = 0;
 
   // Sequential (not concurrent): each digest must see the initiatives earlier digests spawned,
   // exactly as live capture does turn-by-turn.
   const run = async () => {
+    let first = true;
     for (const row of rows) {
       const digest = row.digest || "";
+      const tag = `${String(row.session_id).slice(0, 8)} turn ${row.turn}`;
       if (digest.length < MIN_DIGEST_CHARS) {
-        process.stdout.write(
-          `  ${String(row.session_id).slice(0, 8)} turn ${row.turn}: skipped (digest ${digest.length} chars)\n`
-        );
+        process.stdout.write(`  ${tag}: skipped (digest ${digest.length} chars)\n`);
         continue;
       }
+      // Pace between turns so a burst of sequential calls doesn't get throttled — the exact
+      // failure mode that silently dropped the late/big turns before.
+      if (!first) await sleep(REPLAY_PACING_MS);
+      first = false;
+
       // Rebuild the initiatives list from the TARGET exactly as observeWorker/observe does.
       const initiatives = S.listThreads(target, repo.id)
         .filter((t) => t.status !== "done")
         .slice(0, 20)
         .map((t) => ({ title: t.title, goal: t.goal || null }));
 
-      const output = runHaiku(buildPrompt(digest, initiatives), root, {
-        meter: { db: target, repoId: repo.id, kind: "observer" },
-      });
-      if (!output) {
-        process.stdout.write(
-          `  ${String(row.session_id).slice(0, 8)} turn ${row.turn}: no model output (skipped)\n`
-        );
+      // Retry with backoff + a generous timeout (digests run 20k+ chars) so transient
+      // timeouts/throttling don't vanish as an opaque "no model output".
+      const { text, error, attempts } = await callModelWithRetry(
+        buildPrompt(digest, initiatives),
+        root,
+        { db: target, repoId: repo.id, kind: "observer" }
+      );
+      if (!text) {
+        dropped++;
+        process.stdout.write(`  ${tag}: DROPPED after ${attempts} attempt(s) — ${error}\n`);
         continue;
       }
-      const { goals, events } = extractSessionAnalysis(output);
+      const { goals, events } = extractSessionAnalysis(text);
       await applyCapture(target, repo, {
         goals,
         events,
@@ -428,16 +452,37 @@ export function replay(flags = {}) {
       totalGoals += goals.length;
       totalEvents += events.length;
       processed++;
-      process.stdout.write(
-        `  ${String(row.session_id).slice(0, 8)} turn ${row.turn}: ${goals.length} goal(s), ${events.length} event(s)\n`
-      );
+      const retryNote = attempts > 1 ? ` (after ${attempts} attempts)` : "";
+      process.stdout.write(`  ${tag}: ${goals.length} goal(s), ${events.length} event(s)${retryNote}\n`);
     }
     const initiatives = S.listThreads(target, repo.id).length;
     process.stdout.write(
-      `\nDone. ${processed}/${rows.length} rows processed → ${totalGoals} goal(s), ${totalEvents} event(s) seeded across ${initiatives} initiative(s) in target.\n`
+      `\nDone. ${processed}/${rows.length} rows processed → ${totalGoals} goal(s), ${totalEvents} event(s) seeded across ${initiatives} initiative(s) in target.` +
+        (dropped ? ` ${dropped} turn(s) DROPPED after retries.` : ` No turns dropped.`) +
+        `\n`
     );
   };
   return run();
+}
+
+// Replay batch-call tuning (offline only — the live Stop hook keeps runHaiku's defaults).
+const REPLAY_TIMEOUT_MS = 150000; // digests can be 20k+ chars; the live 60s is too tight for a batch
+const REPLAY_BACKOFF_MS = [2000, 6000, 15000]; // exponential-ish waits before retry 2, 3, 4
+const REPLAY_PACING_MS = 1000; // small gap between turns to avoid throttling
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// One model call for replay, retried on failure with backoff. Returns { text, error, attempts }.
+// Surfaces the last failure reason (timeout/stderr/exit) so a dropped turn is never opaque.
+async function callModelWithRetry(prompt, cwd, meter) {
+  const maxAttempts = REPLAY_BACKOFF_MS.length + 1;
+  let last = { text: null, error: "not attempted" };
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    last = runHaikuOnce(prompt, cwd, { timeout: REPLAY_TIMEOUT_MS, meter });
+    if (last.text) return { ...last, attempts: attempt };
+    if (attempt < maxAttempts) await sleep(REPLAY_BACKOFF_MS[attempt - 1]);
+  }
+  return { ...last, attempts: maxAttempts };
 }
 
 function fail(msg) {

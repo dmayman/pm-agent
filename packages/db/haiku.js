@@ -49,6 +49,37 @@ export function runHaiku(prompt, cwd, { timeout = 60000, meter: m = null } = {})
   }
 }
 
+// A single Haiku attempt that SURFACES why it failed — for offline batch use (the replay tool),
+// where a silently dropped turn is a data-loss bug, not a shrug. Unlike runHaiku (which pipes a
+// bare null and swallows stderr to keep the live Stop hook fast), this captures the subprocess's
+// stderr and distinguishes a timeout from a nonzero exit, returning { text, error }. text is null
+// on any failure and error holds a human-readable reason. Kept separate so live-hook behavior is
+// unchanged; the replay loop layers retry/backoff/pacing on top of this.
+export function runHaikuOnce(prompt, cwd, { timeout = 60000, meter: m = null } = {}) {
+  try {
+    const raw = execFileSync("claude", ARGS(prompt), {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"], // capture stderr so failures aren't opaque
+      timeout,
+      maxBuffer: 16 * 1024 * 1024,
+      env: { ...process.env, PM_AGENT_OBSERVING: "1" },
+    });
+    const { text, usage, cost } = parseResult(raw);
+    if (!text) return { text: null, error: "claude returned an empty result" };
+    meter(m, usage, cost);
+    return { text, error: null };
+  } catch (e) {
+    let error;
+    if (e.killed || e.signal === "SIGTERM") error = `timed out after ${timeout}ms`;
+    else {
+      const stderr = e.stderr && String(e.stderr).trim();
+      error = stderr || e.message || `claude exited with code ${e.status ?? "?"}`;
+    }
+    return { text: null, error: String(error).slice(0, 300) };
+  }
+}
+
 // The eval judge: same headless `claude -p` path as runHaiku, but on a stronger model (Opus by
 // default) and a longer timeout, since it grades a whole session's ledger. Sets the same
 // PM_AGENT_OBSERVING guard so the judge's own Stop hook never re-enters the observer. Returns

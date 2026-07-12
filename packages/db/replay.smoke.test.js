@@ -8,6 +8,22 @@ import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } from "node:f
 import os from "node:os";
 import path from "node:path";
 
+// Put a fake `claude` on PATH that ignores args and prints the --output-format json envelope
+// whose `result` is the given distiller response. Deterministic; no real model, no network.
+function installFakeClaude(tmp, modelJson) {
+  const binDir = path.join(tmp, "bin");
+  mkdirSync(binDir, { recursive: true });
+  const fakeClaude = path.join(binDir, "claude");
+  writeFileSync(
+    fakeClaude,
+    `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(
+      JSON.stringify({ result: modelJson, total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 } })
+    )});\n`
+  );
+  chmodSync(fakeClaude, 0o755);
+  process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH}`;
+}
+
 test("observe --replay seeds multiple initiatives into a target DB (model stubbed)", async () => {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "pm-replay-smoke-"));
   // Never let anything fall back to the real ledger home.
@@ -22,17 +38,7 @@ test("observe --replay seeds multiple initiatives into a target DB (model stubbe
     ],
     events: [{ type: "decided", summary: "Framed two workstreams", thread: "Zone model" }],
   });
-  const binDir = path.join(tmp, "bin");
-  mkdirSync(binDir, { recursive: true });
-  const fakeClaude = path.join(binDir, "claude");
-  writeFileSync(
-    fakeClaude,
-    `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(
-      JSON.stringify({ result: model, total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 } })
-    )});\n`
-  );
-  chmodSync(fakeClaude, 0o755);
-  process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH}`;
+  installFakeClaude(tmp, model);
 
   const S = await import("./store.js");
   const { replay } = await import("./observe.js");
@@ -76,6 +82,55 @@ test("observe --replay seeds multiple initiatives into a target DB (model stubbe
   assert.ok(events >= 1, "at least one event logged");
   const snaps = verify.prepare("SELECT COUNT(*) AS n FROM initiative_snapshots WHERE repo_id = ?").get(repoId).n;
   assert.ok(snaps >= 1, "at least one snapshot recorded");
+
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+test("applyCapture guards same-title collapse: two goals, one title → keep first, warn, drop second", async () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "pm-guard-smoke-"));
+  process.env.PM_AGENT_HOME = path.join(tmp, "home");
+  installFakeClaude(tmp, JSON.stringify({ goals: [], events: [] }));
+
+  const S = await import("./store.js");
+  const { applyCapture } = await import("./observe.js");
+
+  const slug = "acme/collide";
+  const dbPath = path.join(tmp, "target.db");
+  const db = S.openDbAt(dbPath);
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO repos (slug, root, created_at) VALUES (?, ?, ?)").run(slug, tmp, now);
+  const repo = db.prepare("SELECT * FROM repos WHERE slug = ?").get(slug);
+  // An existing umbrella initiative both goals would (wrongly) resolve to.
+  db.prepare("INSERT INTO threads (repo_id, title, status, created_at, updated_at) VALUES (?, ?, 'active', ?, ?)").run(
+    repo.id, "Plan Model & Execution", now, now
+  );
+
+  // Capture stderr to prove the guard warned.
+  const origWrite = process.stderr.write.bind(process.stderr);
+  let stderr = "";
+  process.stderr.write = (chunk) => {
+    stderr += String(chunk);
+    return true;
+  };
+  try {
+    await applyCapture(db, repo, {
+      goals: [
+        { text: "Reviewable set_plan diffs", initiative: "Plan Model & Execution", isNew: true },
+        { text: "Deterministic duplicate-row cleanup", initiative: "Plan Model & Execution", isNew: true },
+      ],
+      events: [],
+      sessionId: "sess-guard",
+      turn: 1,
+    });
+  } finally {
+    process.stderr.write = origWrite;
+  }
+
+  assert.match(stderr, /two goals in one turn resolved to the same initiative/);
+  const threads = db.prepare("SELECT title, goal FROM threads WHERE repo_id = ?").all(repo.id);
+  assert.equal(threads.length, 1, "no duplicate thread created");
+  // First goal kept; second did NOT overwrite it.
+  assert.equal(threads[0].goal, "Reviewable set_plan diffs");
 
   rmSync(tmp, { recursive: true, force: true });
 });
