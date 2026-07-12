@@ -191,13 +191,9 @@ function ensureColumn(db, table, column, decl) {
   }
 }
 
-let _db;
-export function openDb() {
-  if (_db) return _db;
-  const db = new DatabaseSync(dbPath());
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA busy_timeout = 5000");
-  db.exec("PRAGMA foreign_keys = ON");
+// Apply the schema and in-place column migrations to a freshly opened (writable) handle.
+// Shared by openDb (the machine-global singleton) and openDbAt (arbitrary paths, e.g. replay).
+function applySchema(db) {
   db.exec(SCHEMA);
   // Migrations for DBs created before these columns existed.
   ensureColumn(db, "threads", "summary", "TEXT"); // Haiku-synthesized plain-language what/why
@@ -219,7 +215,32 @@ export function openDb() {
   ensureColumn(db, "issue_titles", "status", "TEXT"); // todo | in_progress | done
   ensureColumn(db, "issue_titles", "thread_id", "INTEGER"); // initiative this issue belongs to
   ensureColumn(db, "issue_titles", "pinned", "INTEGER DEFAULT 0"); // 1 = membership set by hand, don't auto-recluster
+}
+
+let _db;
+export function openDb() {
+  if (_db) return _db;
+  const db = new DatabaseSync(dbPath());
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA busy_timeout = 5000");
+  db.exec("PRAGMA foreign_keys = ON");
+  applySchema(db);
   _db = db;
+  return db;
+}
+
+// Open a DB at an EXPLICIT path (not the machine-global singleton) — used by the replay tool to
+// read a source ledger and write a separate target one. A writable handle gets the full schema +
+// migrations applied so a brand-new target file is usable immediately; a readonly handle is left
+// untouched (it can't run WAL/DDL and is assumed already-provisioned). Never cached in _db.
+export function openDbAt(file, { readonly = false } = {}) {
+  const db = new DatabaseSync(file, readonly ? { readOnly: true } : {});
+  db.exec("PRAGMA busy_timeout = 5000");
+  if (!readonly) {
+    db.exec("PRAGMA journal_mode = WAL");
+    db.exec("PRAGMA foreign_keys = ON");
+    applySchema(db);
+  }
   return db;
 }
 

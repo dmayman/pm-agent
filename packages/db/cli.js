@@ -621,7 +621,11 @@ export async function runLedger(cmd, argv) {
       return;
     }
     case "observe": {
-      const { observe, observeWorker } = await import("./observe.js");
+      const { observe, observeWorker, replay } = await import("./observe.js");
+      if (argv.includes("--replay")) {
+        const { flags } = parseArgs(argv);
+        return replay(flags);
+      }
       const workerIdx = argv.indexOf("--worker");
       if (workerIdx !== -1) await observeWorker(argv[workerIdx + 1]);
       else observe();

@@ -5,7 +5,7 @@
 // latency. No-ops unless capture=observer — that's how the toggle works at the hook level.
 
 import { spawn } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import * as S from "./store.js";
@@ -71,30 +71,36 @@ function buildPrompt(digest, initiatives) {
     : "";
   return `You maintain a developer's work ledger. Below is an excerpt from a Claude Code coding session. Do two things:
 
-1) GOAL — Identify the durable goal this session is pursuing. Treat the FIRST user message of the excerpt as a goal-candidate: the moment a goal is framed is often the opening prompt, and it must not slip by as ordinary chatter. Decide whether this work advances one of the existing initiatives (below) or is a NEW goal.
+1) GOALS — Identify the SET of durable goals this session advances or spawns. Treat the FIRST user message of the excerpt as a goal-candidate: the moment a goal is framed is often the opening prompt, and it must not slip by as ordinary chatter. For each goal decide whether it advances one of the existing initiatives (below) or is a NEW goal.
+
+   Emit a SEPARATE goal entry ONLY for a durable goal with its OWN done-signal — a ticket, a distinct workstream, or a shippable outcome that can independently be called finished. A step taken WITHIN a goal (e.g. "run the test suite", "enrich one issue") is an EVENT, not a goal. Apply this test to avoid over-fragmenting: if it has no independent done-signal, it is not its own goal.
+
+   A normal session that advances one initiative yields EXACTLY ONE entry. A planning / retro / triage session whose product is several distinct workstreams (e.g. "three action priorities + file two new issues + a discovery ticket") yields SEVERAL — one per workstream. Returning a single-element array is the common case; an empty array is allowed only if the excerpt truly frames no goal (rare).
 
 2) EVENTS — Extract ONLY the meaningful, timeline-worthy events — decisions made, build/test/review milestones reached, followups taken on, and loose ends explicitly deferred. Skip routine chatter, tool mechanics, and anything trivial. Most excerpts yield 0-3 events; an empty array is correct and expected when nothing notable happened.
 
 Respond with ONLY a JSON object (no prose, no code fence) of this shape:
 {
-  "goal": {
-    "text": "the durable goal in one line — what the work aims to achieve (not the tactic of the moment)",
-    "initiative": "the EXACT title of a matching initiative above, or a short new title if none fits",
-    "isNew": true or false,
-    "framing": "a short quote or paraphrase of the moment the goal was framed (usually the opening user message)",
-    "shift": "if the goal sharpened versus the matched initiative's goal, say how — else null"
-  },
+  "goals": [
+    {
+      "text": "the durable goal in one line — what the work aims to achieve (not the tactic of the moment)",
+      "initiative": "the EXACT title of a matching initiative above, or a short new title if none fits",
+      "isNew": true or false,
+      "framing": "a short quote or paraphrase of the moment the goal was framed (usually the opening user message)",
+      "shift": "if the goal sharpened versus the matched initiative's goal, say how — else null"
+    }
+  ],
   "events": [
     {
       "type": "one of decided|built|tested|reviewed|followup|deferred|merged|blocked|note",
       "summary": "one crisp past-tense line a busy developer would want on their timeline",
-      "thread": "the initiative title this belongs to (reuse goal.initiative when it fits)",
+      "thread": "the initiative title this belongs to (reuse a goals[].initiative when it fits)",
       "refs": { "issue": 0, "pr": 0, "branch": "", "commit": "" }
     }
   ]
 }
 
-Rules: "goal" may be null only if the excerpt truly frames no goal (rare). Use "deferred" ONLY for things explicitly punted to later — those become tracked loose ends. Omit empty "refs".${known}
+Rules: "goals" may be an empty array only if the excerpt truly frames no goal (rare). Use "deferred" ONLY for things explicitly punted to later — those become tracked loose ends. Omit empty "refs".${known}
 
 Excerpt:
 ---
@@ -114,29 +120,44 @@ function extractJsonArray(text) {
   }
 }
 
-// Parse the distiller's response into { goal, events }. The model is asked for an object, but
-// we degrade gracefully: a bare array (old shape / model drift) is treated as events with no
-// goal, and a malformed object still yields whatever events we can recover. Never throws.
+// Parse the distiller's response into { goals, events } — goals is ALWAYS an array. The model
+// is asked for a `goals: []` object (#36), but we degrade gracefully and never throw:
+//   - new shape { goals: [...], events: [...] }  → used as-is (goals filtered to {text} objects)
+//   - legacy shape { goal: {...}, events: [...] } → the singular goal wrapped as a 1-element array
+//   - bare array [...]                            → { goals: [], events: <array> } (events only)
+//   - malformed                                   → whatever events we can slice out, no goals
 // Exported for tests.
 export function extractSessionAnalysis(text) {
-  if (!text) return { goal: null, events: [] };
+  if (!text) return { goals: [], events: [] };
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start !== -1 && end !== -1 && end > start) {
     try {
       const obj = JSON.parse(text.slice(start, end + 1));
-      // Only accept it as the wrapper if it actually carries goal/events — otherwise this was
+      // Only accept it as the wrapper if it actually carries goal(s)/events — otherwise this was
       // a bare array whose inner objects we accidentally grabbed; fall through to array parsing.
-      if (obj && typeof obj === "object" && !Array.isArray(obj) && ("goal" in obj || "events" in obj)) {
+      if (
+        obj &&
+        typeof obj === "object" &&
+        !Array.isArray(obj) &&
+        ("goals" in obj || "goal" in obj || "events" in obj)
+      ) {
         const events = Array.isArray(obj.events) ? obj.events : [];
-        const goal = obj.goal && typeof obj.goal === "object" ? obj.goal : null;
-        return { goal, events };
+        let goals = [];
+        if (Array.isArray(obj.goals)) {
+          goals = obj.goals;
+        } else if (obj.goal && typeof obj.goal === "object" && !Array.isArray(obj.goal)) {
+          goals = [obj.goal]; // legacy singular-goal shape → one-element array
+        }
+        // Keep only real goal objects (must carry a text); drops nulls/strings/junk.
+        goals = goals.filter((g) => g && typeof g === "object" && !Array.isArray(g) && g.text);
+        return { goals, events };
       }
     } catch {
       // fall through to the array fallback
     }
   }
-  return { goal: null, events: extractJsonArray(text) };
+  return { goals: [], events: extractJsonArray(text) };
 }
 
 // Entry point invoked by the Stop hook (payload on stdin). Fast + non-blocking.
@@ -216,6 +237,77 @@ export function observe(cwd = process.cwd()) {
   child.unref();
 }
 
+// The shared capture loop (#36). Given the distiller's { goals, events }, seed/refine every
+// initiative, log every event, then synthesize + snapshot each touched thread. Both the live
+// observer worker and the offline replay tool run this, so capture is identical on both paths.
+// Order matters: seed ALL goals BEFORE logging events, so an event that names a just-spawned
+// initiative resolves to it rather than creating a duplicate.
+//   refreshLifecycle: live-only. Re-derives issue status from git/GitHub (throttled). Replay has
+//   no live git, so it passes false.
+export async function applyCapture(
+  db,
+  repo,
+  { goals = [], events = [], sessionId = null, turn = null, refreshLifecycle = false } = {}
+) {
+  const touched = new Set();
+
+  // Goal-first capture (#26/#36): seed/refine each initiative's durable goal from what this
+  // session pursues, before any events. resolveThread creates the initiative by title when it's
+  // new; setThreadGoal's trust guard refines an observer goal but never clobbers an agent one.
+  for (const g of goals) {
+    if (!g || !g.text || !g.initiative) continue;
+    const gid = S.resolveThread(db, repo.id, String(g.initiative));
+    if (!gid) continue;
+    S.setThreadGoal(db, gid, { goal: g.text, framing: g.framing, source: "observer" });
+    if (g.framing) S.setThreadGenesis(db, gid, String(g.framing));
+    touched.add(gid);
+  }
+
+  for (const e of events) {
+    if (!e || !e.type || !e.summary) continue;
+    const threadId = e.thread ? S.resolveThread(db, repo.id, String(e.thread)) : null;
+    S.logEvent(db, repo.id, {
+      threadId,
+      type: S.normalizeType(e.type),
+      summary: String(e.summary),
+      refs: e.refs && typeof e.refs === "object" ? e.refs : null,
+      source: "observer",
+    });
+    if (threadId) {
+      touched.add(threadId);
+      // Bridge issue→initiative membership: the event names its thread AND a GitHub issue,
+      // but membership lives in issue_titles.thread_id, which logEvent doesn't touch. Attach
+      // it as a SOFT link so the initiative shows the issue (and the recluster can re-home).
+      const issueNum = Number(e.refs?.issue);
+      if (Number.isInteger(issueNum) && issueNum > 0) {
+        S.linkIssueToThread(db, repo.id, issueNum, threadId);
+      }
+    }
+  }
+
+  // Bridge the git/GitHub side: a turn may have closed an issue, merged a PR, or pushed a
+  // branch (e.g. `gh issue close 13`). The observer distills the narrative event, but issue
+  // *status* only moves when we re-derive lifecycle. Do it here, throttled, so done/shipped
+  // reclassify silently within a turn or two of the change — no manual `ingest` needed.
+  if (refreshLifecycle) {
+    for (const id of await maybeRefreshLifecycle(db, repo)) touched.add(id);
+  }
+
+  // Re-synthesize every thread we touched (new goal/event) or whose issue status just flipped,
+  // then snapshot it — the trajectory row the eval harness grades (goal seeded → refined →
+  // sharpened across turns). Snapshot AFTER synthesis so it captures the fresh summary.
+  if (touched.size) {
+    const { synthesizeThread } = await import("./synthesize.js");
+    for (const id of touched) {
+      synthesizeThread(db, repo, id);
+      try {
+        S.snapshotInitiative(db, repo.id, id, { sessionId, turn });
+      } catch {}
+    }
+  }
+  return touched;
+}
+
 // The detached worker: call Haiku, write the events it distilled, clean up.
 export async function observeWorker(jobFile) {
   let job;
@@ -234,65 +326,123 @@ export async function observeWorker(jobFile) {
     cleanup(jobFile);
     return;
   }
-  const { goal, events } = extractSessionAnalysis(output);
+  const { goals, events } = extractSessionAnalysis(output);
   if (repo) {
-    const touched = new Set();
-
-    // Goal-first capture (#26): seed/refine the initiative's durable goal from what this
-    // session is pursuing, before (or alongside) any events. resolveThread creates the
-    // initiative by title when it's new; setThreadGoal's trust guard refines an observer goal
-    // but never clobbers an agent-seeded one.
-    if (goal && goal.text && goal.initiative) {
-      const gid = S.resolveThread(db, repo.id, String(goal.initiative));
-      if (gid) {
-        S.setThreadGoal(db, gid, { goal: goal.text, framing: goal.framing, source: "observer" });
-        if (goal.framing) S.setThreadGenesis(db, gid, String(goal.framing));
-        touched.add(gid);
-      }
-    }
-
-    for (const e of events) {
-      if (!e || !e.type || !e.summary) continue;
-      const threadId = e.thread ? S.resolveThread(db, repo.id, String(e.thread)) : null;
-      S.logEvent(db, repo.id, {
-        threadId,
-        type: S.normalizeType(e.type),
-        summary: String(e.summary),
-        refs: e.refs && typeof e.refs === "object" ? e.refs : null,
-        source: "observer",
-      });
-      if (threadId) {
-        touched.add(threadId);
-        // Bridge issue→initiative membership: the event names its thread AND a GitHub issue,
-        // but membership lives in issue_titles.thread_id, which logEvent doesn't touch. Attach
-        // it as a SOFT link so the initiative shows the issue (and the recluster can re-home).
-        const issueNum = Number(e.refs?.issue);
-        if (Number.isInteger(issueNum) && issueNum > 0) {
-          S.linkIssueToThread(db, repo.id, issueNum, threadId);
-        }
-      }
-    }
-
-    // Bridge the git/GitHub side: a turn may have closed an issue, merged a PR, or pushed a
-    // branch (e.g. `gh issue close 13`). The observer distills the narrative event, but issue
-    // *status* only moves when we re-derive lifecycle. Do it here, throttled, so done/shipped
-    // reclassify silently within a turn or two of the change — no manual `ingest` needed.
-    for (const id of await maybeRefreshLifecycle(db, repo)) touched.add(id);
-
-    // Re-synthesize every thread we touched (new event) or whose issue status just flipped,
-    // then snapshot it — the trajectory row the eval harness grades (goal seeded → refined →
-    // sharpened across turns). Snapshot AFTER synthesis so it captures the fresh summary.
-    if (touched.size) {
-      const { synthesizeThread } = await import("./synthesize.js");
-      for (const id of touched) {
-        synthesizeThread(db, repo, id);
-        try {
-          S.snapshotInitiative(db, repo.id, id, { sessionId: job.sessionId, turn: job.turn });
-        } catch {}
-      }
-    }
+    await applyCapture(db, repo, {
+      goals,
+      events,
+      sessionId: job.sessionId,
+      turn: job.turn,
+      refreshLifecycle: true,
+    });
   }
   cleanup(jobFile);
+}
+
+// Offline replay (#36): re-run stored session_log digests through the CURRENT distiller into a
+// fresh TARGET db, reproducing live capture deterministically from stored input. This is how the
+// multi-goal change is regression-tested against real captured sessions without re-driving them.
+//   --source <path>  DB to READ session_log rows from (opened readonly; never mutated)
+//   --target <path>  DB to WRITE captured initiatives/events/snapshots into (created if absent)
+//   --repo   <slug>  which repo's sessions to replay, e.g. dmayman/habitus
+//   --since  <iso>   only replay rows with created_at >= this (optional)
+// Rows are processed in created_at ASC order — the real chronological capture order across
+// interleaved sessions — so each digest sees the initiatives that earlier digests spawned.
+export function replay(flags = {}) {
+  const sourcePath = flags.source;
+  const targetPath = flags.target;
+  const repoSlug = flags.repo;
+  const since = flags.since || null;
+  if (!sourcePath || typeof sourcePath !== "string")
+    return void fail("observe --replay needs --source <db path>");
+  if (!targetPath || typeof targetPath !== "string")
+    return void fail("observe --replay needs --target <db path>");
+  if (!repoSlug || typeof repoSlug !== "string")
+    return void fail("observe --replay needs --repo <owner/name>");
+  if (!existsSync(sourcePath)) return void fail(`source DB not found: ${sourcePath}`);
+
+  const source = S.openDbAt(sourcePath, { readonly: true });
+  const target = S.openDbAt(targetPath); // schema applied; created if new
+
+  const srcRepo = source.prepare("SELECT * FROM repos WHERE slug = ?").get(repoSlug);
+  if (!srcRepo) return void fail(`no repo '${repoSlug}' in source DB ${sourcePath}`);
+  const repo = target.prepare("SELECT * FROM repos WHERE slug = ?").get(repoSlug);
+  if (!repo) return void fail(`target DB has no repos row for '${repoSlug}' — seed one first`);
+
+  // runHaiku only uses cwd to spawn `claude -p`; the target repo's checkout may not exist here,
+  // so fall back to the current directory when its root is missing.
+  const root = repo.root && existsSync(repo.root) ? repo.root : process.cwd();
+
+  const rows = since
+    ? source
+        .prepare(
+          "SELECT * FROM session_log WHERE repo_id = ? AND created_at >= ? ORDER BY created_at ASC, turn ASC"
+        )
+        .all(srcRepo.id, since)
+    : source
+        .prepare("SELECT * FROM session_log WHERE repo_id = ? ORDER BY created_at ASC, turn ASC")
+        .all(srcRepo.id);
+
+  process.stdout.write(
+    `Replaying ${rows.length} session_log row(s) for ${repoSlug}\n  source: ${sourcePath}\n  target: ${targetPath}${since ? `\n  since:  ${since}` : ""}\n\n`
+  );
+
+  let totalGoals = 0;
+  let totalEvents = 0;
+  let processed = 0;
+
+  // Sequential (not concurrent): each digest must see the initiatives earlier digests spawned,
+  // exactly as live capture does turn-by-turn.
+  const run = async () => {
+    for (const row of rows) {
+      const digest = row.digest || "";
+      if (digest.length < MIN_DIGEST_CHARS) {
+        process.stdout.write(
+          `  ${String(row.session_id).slice(0, 8)} turn ${row.turn}: skipped (digest ${digest.length} chars)\n`
+        );
+        continue;
+      }
+      // Rebuild the initiatives list from the TARGET exactly as observeWorker/observe does.
+      const initiatives = S.listThreads(target, repo.id)
+        .filter((t) => t.status !== "done")
+        .slice(0, 20)
+        .map((t) => ({ title: t.title, goal: t.goal || null }));
+
+      const output = runHaiku(buildPrompt(digest, initiatives), root, {
+        meter: { db: target, repoId: repo.id, kind: "observer" },
+      });
+      if (!output) {
+        process.stdout.write(
+          `  ${String(row.session_id).slice(0, 8)} turn ${row.turn}: no model output (skipped)\n`
+        );
+        continue;
+      }
+      const { goals, events } = extractSessionAnalysis(output);
+      await applyCapture(target, repo, {
+        goals,
+        events,
+        sessionId: row.session_id,
+        turn: row.turn,
+        refreshLifecycle: false, // no live git during replay
+      });
+      totalGoals += goals.length;
+      totalEvents += events.length;
+      processed++;
+      process.stdout.write(
+        `  ${String(row.session_id).slice(0, 8)} turn ${row.turn}: ${goals.length} goal(s), ${events.length} event(s)\n`
+      );
+    }
+    const initiatives = S.listThreads(target, repo.id).length;
+    process.stdout.write(
+      `\nDone. ${processed}/${rows.length} rows processed → ${totalGoals} goal(s), ${totalEvents} event(s) seeded across ${initiatives} initiative(s) in target.\n`
+    );
+  };
+  return run();
+}
+
+function fail(msg) {
+  process.stderr.write(`error: ${msg}\n`);
+  process.exitCode = 1;
 }
 
 const LIFECYCLE_THROTTLE_MS = 90 * 1000; // at most once every ~90s per repo

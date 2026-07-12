@@ -10,6 +10,7 @@
     "pm-agent": "bin/pm-agent.js"
   },
   "scripts": {
+    "test": "node --test",
     "dev": "node bin/pm-agent.js dev",
     "reload": "node bin/pm-agent.js reload",
     "validate": "node bin/pm-agent.js validate",
