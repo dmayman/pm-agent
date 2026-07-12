@@ -7,6 +7,9 @@ node_modules/
 dist/
 build/
 
+# Worktrees (reusable slots for tracked branches — see docs/how-work-happens.md)
+.worktrees/
+
 # Local runtime / data (future server + DB)
 *.sqlite
 *.sqlite3
