@@ -446,14 +446,27 @@ async function renderThread(force){
     .sort((a, b) => (isUnfinished(b.status) - isUnfinished(a.status)) || (b.number - a.number));
   const w = th.work || emptyWork;
   const sig = "th:" + state.threadId + ":" + events.length + ":" + issues.length
-    + ":" + JSON.stringify(w) + ":" + (th.focus || "") + ":" + (th.why || "");
+    + ":" + JSON.stringify(w) + ":" + (th.goal || "") + ":" + (th.focus || "") + ":" + (th.why || "");
   if(!force && sig === state.sig) return;
 
   const sm = statusMeta(th.status);
-  const summary = th.summary
-    ? `<p class="th-summary">${fmtSummary(th.summary)}</p>`
-    : issues.length ? "" /* pure-backlog: the issue list carries the story */
-    : `<p class="th-summary none">No synthesized summary yet — the story is still being distilled.</p>`;
+  // Goal-first: the durable goal is the hero. When it's present the synthesized headline is
+  // redundant with it, so the summary renders below as the "where things stand" body only.
+  const goal = (typeof th.goal === "string" && th.goal.trim()) ? th.goal.trim() : null;
+  const goalHero = goal ? `<p class="th-goal">${esc(goal)}</p>` : "";
+  let summary;
+  if(th.summary){
+    if(goal){
+      const { rest } = splitSummary(th.summary);
+      summary = rest ? `<p class="th-summary supp">${esc(rest)}</p>` : "";
+    } else {
+      summary = `<p class="th-summary">${fmtSummary(th.summary)}</p>`;
+    }
+  } else {
+    summary = issues.length ? "" /* pure-backlog: the issue list carries the story */
+      : goal ? "" /* the goal hero carries the story until synthesis lands */
+      : `<p class="th-summary none">No synthesized summary yet — the story is still being distilled.</p>`;
+  }
   const genesis = th.genesis
     ? `<div class="th-genesis"><span class="rune">decisions</span><span>${esc(th.genesis)}</span></div>`
     : "";
@@ -468,7 +481,7 @@ async function renderThread(force){
     + `<div class="th-status-row">`
     +   `<span class="pill" style="--pc:${sm.pc}"><span class="pdot"></span>${esc(sm.label)}</span>`
     +   `<span class="th-title">${esc(th.title || "Untitled initiative")}</span>`
-    + `</div>${summary}${focus}${why}${genesis}`
+    + `</div>${goalHero}${summary}${focus}${why}${genesis}`
     + lifecycleIndicator(w)
     + `</div>`;
 
@@ -580,18 +593,30 @@ function expanderBody(id){
 function threadRow(th, key, i){
   const w = th.work || emptyWork;
   const open = state.expanded.has(key);
-  // Hierarchy: the **headline** reads as the title; the rest of the paragraph sits below,
-  // a notch down. No summary -> genesis or a plain backlog line as the body.
+  // Goal-first hierarchy: the durable GOAL (or, failing that, the synthesized **headline**) is
+  // the visual anchor. The short area-style title is demoted to a small dim label beneath it.
+  // The rest of the summary sits below as supporting detail. No goal/summary -> genesis or a
+  // plain backlog line carries the body.
+  const title = th.title || "Untitled initiative";
+  const goal = (typeof th.goal === "string" && th.goal.trim()) ? th.goal.trim() : null;
+  const { head, rest } = th.summary ? splitSummary(th.summary) : { head: null, rest: null };
+  const anchor = goal || head || null;
   let hero;
-  if(th.summary){
-    const { head, rest } = splitSummary(th.summary);
-    hero = (head ? `<p class="tr-head">${esc(head)}</p>` : "")
-      + (rest ? `<p class="tr-rest">${esc(rest)}</p>` : "")
-      + (!head && !rest ? `<p class="tr-rest">${esc(th.summary)}</p>` : "");
+  if(anchor){
+    // When the goal is the anchor, the synthesized headline is redundant with it, so keep only
+    // the "where things stand" body (rest). When there's no goal, the headline IS the anchor.
+    hero = `<p class="tr-head">${esc(anchor)}</p>`
+      + (title && title !== anchor ? `<span class="trow-title">${esc(title)}</span>` : "")
+      + (rest ? `<p class="tr-rest">${esc(rest)}</p>` : "");
+  } else if(th.summary){
+    hero = `<span class="trow-title">${esc(title)}</span>`
+      + `<p class="tr-rest">${esc(th.summary)}</p>`;
   } else if(th.genesis){
-    hero = `<p class="tr-rest is-genesis">${esc(th.genesis)}</p>`;
+    hero = `<span class="trow-title">${esc(title)}</span>`
+      + `<p class="tr-rest is-genesis">${esc(th.genesis)}</p>`;
   } else {
-    hero = `<p class="tr-rest none">Backlog initiative — ${w.total || 0} issue${w.total === 1 ? "" : "s"}, no summary yet.</p>`;
+    hero = `<p class="tr-head">${esc(title)}</p>`
+      + `<p class="tr-rest none">Backlog initiative — ${w.total || 0} issue${w.total === 1 ? "" : "s"}, no summary yet.</p>`;
   }
   // Forward-compat: a momentary `focus` (distinct from the durable goal) renders as a quiet
   // "now:" line beneath the story — and simply isn't there until the field lands.
@@ -603,7 +628,6 @@ function threadRow(th, key, i){
     + `<button class="trow-head" data-key="${esc(key)}" data-id="${esc(th.id)}" aria-expanded="${open}">`
     +   `<span class="chev">›</span>`
     +   `<span class="trow-body">`
-    +     `<span class="trow-title">${esc(th.title || "Untitled initiative")}</span>`
     +     hero
     +     lifecycleIndicator(w)
     +   `</span>`
@@ -702,7 +726,7 @@ async function renderInitiatives(force){
 
   const sig = "in:" + state.filter + ":" + threads.length + ":"
     + threads.map((t) => t.id + "@" + t.status + "@" + t.last_event_ts + "@"
-        + (t.summary ? 1 : 0) + "@" + (t.focus || "") + "@" + JSON.stringify(t.work || {})).join(",")
+        + (t.summary ? 1 : 0) + "@" + (t.goal || "") + "@" + (t.focus || "") + "@" + JSON.stringify(t.work || {})).join(",")
     + ":" + loose.map((l) => l.id).join(",");
   if(!force && sig === state.sig) return;
 
