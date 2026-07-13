@@ -123,6 +123,23 @@ CREATE TABLE IF NOT EXISTS issue_titles (
   PRIMARY KEY (repo_id, number)
 );
 
+-- Branch/PR → initiative association (#39). Goal-first threads are often born in conversation
+-- with no GitHub issue number, so the issue_titles.thread_id bridge never attributes their open
+-- branches / merged PRs to them and the lifecycle bar reads empty. This table records the
+-- branch/pr refs the observer already captures on events, keyed by thread, with a merged flag
+-- derived (deterministically, no network) from the merged-type events derived ingest writes.
+CREATE TABLE IF NOT EXISTS thread_refs (
+  repo_id    INTEGER NOT NULL REFERENCES repos(id),
+  thread_id  INTEGER NOT NULL REFERENCES threads(id),
+  kind       TEXT NOT NULL,               -- 'branch' | 'pr'
+  value      TEXT NOT NULL,               -- branch name | pr number (as text)
+  merged     INTEGER NOT NULL DEFAULT 0,  -- 1 once the ledger shows this branch/pr landed
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (repo_id, thread_id, kind, value)
+);
+CREATE INDEX IF NOT EXISTS thread_refs_thread ON thread_refs(thread_id);
+
 CREATE TABLE IF NOT EXISTS config (
   scope TEXT NOT NULL,   -- 'global' or a repo slug
   key   TEXT NOT NULL,
@@ -589,13 +606,18 @@ export function listEvents(db, repoId, { since = null, threadId = null, limit = 
     .all(...args);
 }
 
-// Loose ends = unresolved deferred events.
+// Loose ends = unresolved deferred events. A deferred item whose initiative has already been
+// marked done is dropped (#39): the work stream landed, so the punt no longer dangles — it was
+// the single largest source of Loose-ends noise in real ledgers (~40% of entries sat on done
+// threads). Reopening the thread (status != done) surfaces its loose ends again, so this is a
+// reversible visual filter, not a mutation. Unthreaded deferrals (thread_id NULL) always show.
 export function listLooseEnds(db, repoId) {
   return db
     .prepare(
       `SELECT e.*, t.title AS thread_title
          FROM events e LEFT JOIN threads t ON t.id = e.thread_id
         WHERE e.repo_id = ? AND e.type = 'deferred' AND e.resolved_at IS NULL
+          AND (t.id IS NULL OR t.status != 'done')
         ORDER BY e.ts DESC`
     )
     .all(repoId);
@@ -701,6 +723,51 @@ export function unpinIssue(db, repoId, number) {
     repoId,
     Number(number)
   );
+}
+
+// --- Branch/PR → initiative refs (#39) -------------------------------------
+// Goal-first threads frequently carry no GitHub issue number, so their open branches and merged
+// PRs never attribute through the issue bridge. The observer already captures refs.branch /
+// refs.pr on events; these helpers persist that association per-thread so lifecycle + the UI can
+// show it. Association is soft and additive (idempotent upsert); the `merged` flag is derived
+// deterministically from the ledger's merged-type events (see work.js refreshThreadRefs).
+
+// Record a branch/PR association on a thread. Idempotent on (repo, thread, kind, value); never
+// clobbers a merged=1 flag already set. `kind` must be 'branch' or 'pr'; blanks are ignored.
+export function linkRefToThread(db, repoId, threadId, kind, value) {
+  if (!threadId || (kind !== "branch" && kind !== "pr")) return;
+  const v = String(value == null ? "" : value).trim();
+  if (!v) return;
+  const t = now();
+  db.prepare(
+    `INSERT INTO thread_refs (repo_id, thread_id, kind, value, merged, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 0, ?, ?)
+     ON CONFLICT(repo_id, thread_id, kind, value) DO NOTHING`
+  ).run(repoId, threadId, kind, v, t, t);
+}
+
+// The branch/PR refs recorded for a thread, each with its derived merged flag.
+export function refsForThread(db, threadId) {
+  return db
+    .prepare("SELECT kind, value, merged FROM thread_refs WHERE thread_id = ? ORDER BY kind, value")
+    .all(threadId);
+}
+
+// All refs for a repo (used by the lifecycle refresh to (re)derive the merged flag in bulk).
+export function listThreadRefs(db, repoId) {
+  return db
+    .prepare("SELECT thread_id, kind, value, merged FROM thread_refs WHERE repo_id = ?")
+    .all(repoId);
+}
+
+// Set/clear the merged flag for one ref. Returns true when it actually changed.
+export function setThreadRefMerged(db, repoId, threadId, kind, value, merged) {
+  const r = db
+    .prepare(
+      "UPDATE thread_refs SET merged = ?, updated_at = ? WHERE repo_id = ? AND thread_id = ? AND kind = ? AND value = ? AND merged != ?"
+    )
+    .run(merged ? 1 : 0, now(), repoId, threadId, kind, String(value), merged ? 1 : 0);
+  return r.changes > 0;
 }
 
 // Threads with their issues attached — the shape the `initiative list` command and the
