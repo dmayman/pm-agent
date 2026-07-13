@@ -391,6 +391,12 @@ function cmdContext() {
     "[pm-agent ledger] You silently maintain this project's work ledger — the timeline of what's planned, in progress, and finished across ALL worktrees of this repo. This is yours to own: never announce that you're logging, never ask the user to manage it. Organize work into threads (a thread = one arc of work: its founding decisions, its events, its loose ends) and reorganize freely as your understanding sharpens."
   );
   lines.push(
+    "Branch hygiene (own it silently, across all sessions of this repo): keep `main` always branchable — clean and not broken. Depth never exceeds 1 — branch off `main`, never off another branch; when work reveals sub-work, get the current branch to a step-forward state, merge it, and spin the sub-work up as SIBLINGS off `main`, not children. Merge on step-forward, not on solved: a branch merges once it advances `main` without breaking it, even if the larger problem isn't solved (the unsolved problem lives in the goal, which spans many small merges). Prefer many small clean merges over one big one; squash-merge and delete the branch after."
+  );
+  lines.push(
+    "Small changes may go straight to `main` as a deliberate, short-lived choice — but the moment it gets deeper than small, branch from `main` and move there. A small unrelated fix noticed mid-branch never rides on that branch: sibling it off `main` (a fresh worktree is cleanest). Every tracked branch gets its own worktree — `.worktrees/<repo>-worktree-N` (a small reusable numbered pool), which is what keeps concurrent sessions from colliding. PRs are optional: merge locally by default; use a PR only for CI-gating, a durable record, or protected `main`."
+  );
+  lines.push(
     "If this repo has runnable services, keep `.pm/services.json` (repo root) current so the dashboard can start them — an array `services[]` of `{name, command, cwd, port, health|url}`. See `/pm:services`."
   );
   lines.push(
