@@ -43,7 +43,10 @@ Repo identity: `owner/repo` from the remote when present, else `sha1(git-common-
 initiative vocabulary and isn't worth a schema migration.)
 
 - **repos** — `id, slug, root, created_at`
-- **threads** — one row per initiative: `id, repo_id, title, status(active|in_review|blocked|done), genesis, goal, goal_source, why, created_at, updated_at`
+- **threads** — one row per initiative: `id, repo_id, title, status(active|in_review|blocked|done), genesis, goal, goal_source, focus, why, created_at, updated_at`
+  - `goal` is the durable outcome framed at the arc's birth and held steady; `focus` is
+    what the work is concentrating on right now and swings freely turn to turn — the
+    split keeps the tactic of the moment from overwriting the goal
 - **events** — `id, repo_id, thread_id?, ts, type, summary, refs(json), source(observer|explicit|derived), resolved_at?`
   - types: `decided, built, tested, reviewed, followup, deferred, merged, blocked, note`
   - loose ends = `type='deferred' AND resolved_at IS NULL` — a query, not a separate table

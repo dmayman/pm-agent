@@ -487,10 +487,16 @@ export function whySource(db, id) {
   return row ? row.why_source : null;
 }
 
-// Seed or refine a thread's 'why' (motivation/impact). Same trust guard as setThreadGoal.
+// Seed or refine a thread's 'why' (motivation/impact). Agent writes are authoritative; the
+// observer FILLS an empty why but never rewrites one — the why is the durable motivation, and
+// letting the observer churn it every turn is the same failure mode the goal/focus split fixes.
 export function setThreadWhy(db, id, { why = undefined, source = "observer" } = {}) {
   if (why === undefined || why == null || String(why).trim() === "") return false;
-  if (source !== "agent" && whySource(db, id) === "agent") return false;
+  if (source !== "agent") {
+    const cur = db.prepare("SELECT why, why_source FROM threads WHERE id = ?").get(id);
+    if (cur && cur.why_source === "agent") return false; // never clobber the agent's why
+    if (cur && cur.why) return false; // observer fills only when empty
+  }
   db.prepare("UPDATE threads SET why = ?, why_source = ?, updated_at = ? WHERE id = ?").run(
     String(why).trim(),
     source,
