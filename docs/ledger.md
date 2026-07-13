@@ -16,8 +16,10 @@ reports into**, that never blocks work and that Claude owns silently.
    issues): its founding decisions (genesis), a chronological event log, current state,
    and loose ends. Issues/PRs/commits are _artifacts an initiative references_ — not the
    container. A followup is just another event on the same initiative; no new issue
-   required. Goals are captured live: the moment one is framed in conversation, Claude
-   seeds the initiative, and the observer refines it as work unfolds.
+   required. Goals are captured live by the observer: the moment one is framed in
+   conversation, the distiller seeds the initiative's durable goal and sharpens it only on
+   genuine reframes — the tactic of the moment lands in `focus`, which is free to swing.
+   (Claude seeds a high-trust goal by hand only when the user explicitly asks.)
 3. **Claude owns it silently.** The user never manages initiatives and is never told the
    ledger is being maintained. Claude creates, names, and reorganizes initiatives on its
    own. The only way the user experiences it is by opening a view — which should feel like
