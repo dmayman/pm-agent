@@ -41,7 +41,7 @@ const LIFECYCLE = {
 };
 const lifeMeta = (s) => LIFECYCLE[s] || { label:s || "—", short:s || "—", pc:"var(--ink-mute)" };
 const isUnfinished = (s) => s === "in_progress" || s === "shipped";
-const emptyWork = { total:0, done:0, shipped:0, todo:0, inProgress:0, unfinished:[] };
+const emptyWork = { total:0, done:0, shipped:0, todo:0, inProgress:0, unfinished:[], refs:[], mergedRefs:0, openRefs:0 };
 
 // ---- tiny helpers (shared with worktrees-panel.js) --------------------------
 export const $ = (sel, el = document) => el.querySelector(sel);
@@ -537,6 +537,19 @@ function lifecycleIndicator(w){
   if(w.done) parts.push(`<span class="lc-n done">${w.done} done</span>`);
   if(unfin)  parts.push(`<span class="lc-n unfin">${unfin} unfinished</span>`);
   if(w.todo) parts.push(`<span class="lc-n todo">${w.todo} to&nbsp;do</span>`);
+  // Goal-first threads (#39): with no linked issues, the issue lifecycle is empty. Fold in the
+  // branch/PR refs so the bar reflects what actually landed vs is still open, instead of reading
+  // "no issues". Only when there are truly no issues — issue-backed threads keep their bar.
+  if(!w.total && (w.mergedRefs || w.openRefs)){
+    const rsegs = [["done", w.mergedRefs], ["in_progress", w.openRefs]].filter(([, n]) => n > 0);
+    const rbar = rsegs.map(([k, n]) =>
+      `<span class="lc-seg" style="--pc:${lifeMeta(k).pc};flex:${n}" title="${n} ${k === "done" ? "landed" : "open"} branch/PR"></span>`).join("");
+    const rparts = [];
+    if(w.mergedRefs) rparts.push(`<span class="lc-n done">${w.mergedRefs} landed</span>`);
+    if(w.openRefs)   rparts.push(`<span class="lc-n unfin">${w.openRefs} open</span>`);
+    return `<div class="lifecycle"><div class="lc-bar" aria-hidden="true">${rbar}</div>`
+      + `<div class="lc-label">${rparts.join(`<span class="lc-dot">·</span>`)}</div></div>`;
+  }
   const label = parts.length ? parts.join(`<span class="lc-dot">·</span>`) : `<span class="lc-n todo">no issues</span>`;
   return `<div class="lifecycle"><div class="lc-bar" aria-hidden="true">${bar || `<span class="lc-seg" style="--pc:var(--ink-whisper);flex:1"></span>`}</div>`
     + `<div class="lc-label">${label}</div></div>`;
@@ -563,6 +576,24 @@ function issueRow(iss){
     + `</div>`;
 }
 
+// a branch/PR ref row inside a thread expander — the goal-first equivalent of an issue row for
+// initiatives that carry no GitHub issue number (#39). merged → "landed", else → "open".
+function refRow(r){
+  const merged = !!r.merged;
+  const lm = lifeMeta(merged ? "done" : "in_progress");
+  const label = merged ? "landed" : "open";
+  const disp = r.kind === "pr" ? "#" + r.value : r.value;
+  const url = ghUrl(r.kind, r.value);
+  const body = url
+    ? `<a class="issue-branch" href="${esc(url)}" target="_blank" rel="noopener"><span class="k">${icon("branch")}</span>${esc(disp)}</a>`
+    : `<span class="issue-branch"><span class="k">${icon("branch")}</span>${esc(disp)}</span>`;
+  return `<div class="issue-row ${merged ? "" : "unfin"}" style="--pc:${lm.pc}">`
+    + `<span class="issue-pill"><span class="ip-dot"></span>${esc(label)}</span>`
+    + `<span class="issue-title">${r.kind === "pr" ? "pull request" : "branch"}</span>`
+    + body
+    + `</div>`;
+}
+
 // the body of an expanded thread: issues (lifecycle) first, commits demoted
 function expanderBody(id){
   const openLink = `<a class="exp-open" href="#/thread/${esc(id)}">Open initiative<span class="arw"> →</span></a>`;
@@ -573,8 +604,13 @@ function expanderBody(id){
     .sort((a, b) => (isUnfinished(b.status) - isUnfinished(a.status))
       || (b.number - a.number));
   const events = d.events || [];
+  // Goal-first threads (#39): no issues, but branch/PR refs the observer captured. Show them so
+  // the expander isn't a dead end — each row links out to the branch/PR on GitHub.
+  const refs = (d.thread && d.thread.work && d.thread.work.refs) ? d.thread.work.refs : [];
   const issuesHtml = issues.length
     ? `<div class="exp-issues">${issues.map(issueRow).join("")}</div>`
+    : refs.length
+    ? `<div class="exp-issues">${refs.map(refRow).join("")}</div>`
     : `<div class="exp-none">no issues linked to this initiative yet</div>`;
   const evId = "ev-" + id;
   // footer row: the commits disclosure sits at the left, "Open initiative" at the right;
