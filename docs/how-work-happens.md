@@ -159,3 +159,29 @@ Otherwise, skip it.
 - **Clean up.** Squash-merge; delete branches once merged; free their worktrees.
 - The work of multiple concurrent agent sessions interfering is unacceptable. These
   rules exist to guarantee it can't happen.
+
+---
+
+## The contract (injected into every session)
+
+pm-agent's SessionStart hook injects a short condensation of this doc into every
+consuming Claude Code session (via `pm-agent context`). The text between the markers
+below is that condensation, verbatim — **this doc is the single source of truth.**
+`scripts/sync-session-contract.mjs` extracts it into the generated module
+`packages/db/session-contract.js` (which `pm-agent context` imports). Edit it here,
+then run `npm run sync:contract`; `npm test` fails while the two drift.
+
+<!-- session-contract:start -->
+Branch hygiene (own it silently, across all sessions of this repo): `main` is always
+branchable — clean, not broken. Depth never exceeds 1: branch off `main`, never off
+another branch; when work reveals sub-work, sibling it off `main` — don't nest. Merge
+on step-forward, not on solved: a branch merges once it advances `main` without
+breaking it, even if the larger problem isn't solved; prefer many small merges.
+Direct-to-`main` is allowed deliberately and briefly for known-small changes — the
+moment it grows past small, branch from `main` and move the work there.
+
+Every tracked branch gets its own worktree — that's what keeps concurrent sessions
+from colliding. Worktrees are reusable numbered siblings of the main checkout —
+`../<repo>-1`, `../<repo>-2` (the next free number), never named after the branch.
+When a branch is done: squash-merge, delete it, free its worktree.
+<!-- session-contract:end -->

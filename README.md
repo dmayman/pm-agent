@@ -35,9 +35,10 @@ clarity when you want it.
 - **It spans all your worktrees.** The ledger is one store per repo, global on your machine
   (`~/.pm-agent/pm.db`) — so two sessions building two issues in two worktrees land on one
   shared timeline instead of each seeing half the picture.
-- **It's cheap.** Most of the timeline is derived for free from `git` and `gh`; the rest is
-  distilled by **Haiku**. Claude only contributes what git can't see — goals, decisions,
-  loose ends, and where one initiative ends and the next begins.
+- **It's cheap.** Most of the timeline is derived for free from `git` and `gh`; the rest —
+  goals, decisions, loose ends, and where one initiative ends and the next begins — is
+  distilled by a **Haiku** observer pass. Claude itself only steps in for what the observer
+  can't see, or when you explicitly ask it to group issues or record a goal.
 - **It calls issues by name.** A `#-glossary` means Claude says *"the token-refresh work
   (#53)"*, not a bare `#53` you don't recognize.
 
