@@ -11,6 +11,7 @@
   },
   "scripts": {
     "test": "node --test",
+    "sync:contract": "node scripts/sync-session-contract.mjs",
     "dev": "node bin/pm-agent.js dev",
     "reload": "node bin/pm-agent.js reload",
     "validate": "node bin/pm-agent.js validate",

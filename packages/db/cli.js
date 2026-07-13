@@ -3,6 +3,7 @@
 // web UI consumes the same JSON these commands emit with --json.
 
 import * as S from "./store.js";
+import { branchHygieneContract } from "./session-contract.js";
 
 // --- tiny flag parser -------------------------------------------------------
 // Splits argv into { _: [positionals], flags: {name: value|true} }. Long flags only
@@ -354,8 +355,10 @@ function cmdConfig(argv) {
   process.stdout.write(dim(`${scope}:${key} = ${value}\n`));
 }
 
-// The SessionStart injection payload: the #-glossary + capture mode + the silent-owner
-// instruction. Kept here (not hardcoded in hooks.json) so it can carry live data.
+// The SessionStart injection payload, three things only: (1) ledger ownership +
+// capture mode, (2) the branch-hygiene contract — generated from the marked section
+// of docs/how-work-happens.md via scripts/sync-session-contract.mjs — and (3) the
+// #-glossary. Kept here (not hardcoded in hooks.json) so it can carry live data.
 function cmdContext() {
   const db = S.openDb();
   const repo = S.getRepo(db);
@@ -363,36 +366,16 @@ function cmdContext() {
   const mode = S.effectiveConfig(db, repo.slug, "capture", "observer");
   const glossary = S.issueGlossary(db, repo.id, 40);
   const lines = [];
+  const capture =
+    mode === "explicit"
+      ? "Capture mode = explicit: when something worth remembering happens — a decision, a build/test/review milestone, a followup, or a deferred loose end — record it with `pm-agent log --type <decided|built|tested|reviewed|followup|deferred|merged|blocked|note> [--thread \"<title or id>\"] [--issue N] [--commit SHA] \"<one line>\"`. Judgement over volume: log what your future self would want on the timeline, not every action."
+      : "Capture mode = observer: an automatic Haiku pass records the timeline for you at the end of each turn, so you normally don't log by hand — only run `pm-agent log ...` for something the observer can't see (e.g. a deferred loose end or a decision made purely in conversation).";
   lines.push(
-    "[pm-agent ledger] You silently maintain this project's work ledger — the timeline of what's planned, in progress, and finished across ALL worktrees of this repo. This is yours to own: never announce that you're logging, never ask the user to manage it. Organize work into initiatives (an initiative = one arc of work: its durable goal, its founding decisions, its events, its loose ends) and reorganize freely as your understanding sharpens."
+    "[pm-agent ledger] You silently maintain this project's work ledger — the timeline of what's planned, in progress, and finished across ALL worktrees of this repo. Never announce that you're logging, never ask the user to manage it. Organize work into initiatives (an initiative = one arc of work with a durable goal) and reorganize freely as your understanding sharpens. " +
+      capture +
+      ' When the user explicitly asks to group or regroup issues, or to record a goal, act via `pm-agent initiative new "<name>"` / `pm-agent initiative add "<name-or-id>"` (`--issues N,M` pins issues durably; `--goal`/`--why` seed a high-trust goal the automatic observer never overwrites).'
   );
-  lines.push(
-    "Branch hygiene (own it silently, across all sessions of this repo): keep `main` always branchable — clean and not broken. Depth never exceeds 1 — branch off `main`, never off another branch; when work reveals sub-work, get the current branch to a step-forward state, merge it, and spin the sub-work up as SIBLINGS off `main`, not children. Merge on step-forward, not on solved: a branch merges once it advances `main` without breaking it, even if the larger problem isn't solved (the unsolved problem lives in the goal, which spans many small merges). Prefer many small clean merges over one big one; squash-merge and delete the branch after."
-  );
-  lines.push(
-    "Small changes may go straight to `main` as a deliberate, short-lived choice — but the moment it gets deeper than small, branch from `main` and move there. A small unrelated fix noticed mid-branch never rides on that branch: sibling it off `main` (a fresh worktree is cleanest). Every tracked branch gets its own worktree (a reusable numbered workspace — see worktree naming below), which is what keeps concurrent sessions from colliding. PRs are optional: merge locally by default; use a PR only for CI-gating, a durable record, or protected `main`."
-  );
-  lines.push(
-    "If this repo has runnable services, keep `.pm/services.json` (repo root) current so the dashboard can start them — an array `services[]` of `{name, command, cwd, port, health|url}`. See `/pm:services`."
-  );
-  lines.push(
-    "When you create a git worktree by hand, name it as a generic numbered sibling of the main checkout — `../<repo>-1`, `../<repo>-2` (the next free number) — never after the branch you happen to be checking out. A worktree is a durable numbered workspace that branches move through, matching the dashboard's port-slot model (main = 0, extra trees 1, 2, …); the dashboard's `+ worktree` button already names them this way."
-  );
-  lines.push(
-    'An initiative is defined by its GOAL, not its title — the durable thing the work is trying to achieve. The moment the user frames a goal in conversation (usually before any issue or branch exists), seed it: `pm-agent initiative new "<short name>" --goal "<one-line durable goal>" --why "<why it matters>"`. As the work reveals more, refine the same initiative (`pm-agent initiative add "<name-or-id>" --goal "<sharpened goal>"`) — hold the durable goal steady while the approach evolves. Goals you seed this way are high-trust and are never overwritten by the automatic observer. Do this silently, as part of owning the ledger.'
-  );
-  lines.push(
-    "Initiatives are also the buckets issues group into. When the user asks to (re)group issues (e.g. \"#43 and #49 should be an initiative about auth\"), act on it: create or extend the initiative and pin those issues with `pm-agent initiative new \"<name>\" --issues 43,49` or `pm-agent initiative add \"<name-or-id>\" --issues 12`. Pinned issues are locked — nothing automatic will ever move them — so this is durable, not a one-off. Then be proactive: look over the other known issues, and if any clearly belong to that same initiative, add them too and tell the user which ones you pinned and why (undo with `pm-agent initiative remove --issues N`). Use `pm-agent initiative list --json` to see current groupings."
-  );
-  if (mode === "explicit") {
-    lines.push(
-      "Capture mode = explicit: when something worth remembering happens — a decision, a build/test/review milestone, a followup, or a deferred loose end — record it with `pm-agent log --type <decided|built|tested|reviewed|followup|deferred|merged|blocked|note> [--thread \"<title or id>\"] [--issue N] [--commit SHA] \"<one line>\"`. Judgement over volume: log what your future self would want on the timeline, not every action."
-    );
-  } else {
-    lines.push(
-      "Capture mode = observer: an automatic Haiku pass records the timeline for you at the end of each turn, so you normally don't log by hand. Only run `pm-agent log ...` to capture something the observer can't see — e.g. a deferred loose end or a decision made purely in conversation."
-    );
-  }
+  lines.push(...branchHygieneContract);
   if (glossary.length) {
     lines.push(
       "When you reference an issue, name it, don't just cite a number the user won't recognize — say \"the token-refresh work (#53)\", not \"#53\". Known issues: " +
