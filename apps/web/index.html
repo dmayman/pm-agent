@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>pm-agent — ledger</title>
+<title>pm-agent — observer</title>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -30,15 +30,15 @@
     </div>
 
     <nav class="nav" id="nav">
-      <a class="nav-item" data-view="work" href="#/work">
+      <a class="nav-item" data-view="initiatives" href="#/initiatives">
         <span class="nav-mark"></span>
-        <span class="nav-text">Work</span>
-        <span class="nav-badge" id="workBadge"></span>
+        <span class="nav-text">Initiatives</span>
+        <span class="nav-badge" id="initiativesBadge"></span>
       </a>
-      <a class="nav-item" data-view="inflight" href="#/inflight">
+      <a class="nav-item" data-view="timeline" href="#/timeline">
         <span class="nav-mark"></span>
-        <span class="nav-text">In flight</span>
-        <span class="nav-badge" id="inflightBadge"></span>
+        <span class="nav-text">Timeline</span>
+        <span class="nav-badge"></span>
       </a>
       <a class="nav-item" data-view="usage" href="#/usage">
         <span class="nav-mark"></span>
@@ -61,6 +61,6 @@
     <section class="view" id="view"></section>
   </main>
 </div>
-<script src="/app.js" defer></script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>

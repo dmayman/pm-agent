@@ -278,6 +278,30 @@ function annotateRemotes(report) {
   }
 }
 
+// ---- worktree-report cache ---------------------------------------------------
+// worktreeReport shells out to git + lsof synchronously, and the dashboard re-fetches
+// /api/worktrees on every SSE-driven refresh — several process spawns per ledger tick.
+// Memoize the raw report per repo root for a few seconds: long enough to absorb refresh
+// bursts, short enough that out-of-band changes still surface promptly. Every write action
+// busts the cache (see the POST path in serve()) so Start/Stop feedback stays instant.
+const WT_REPORT_TTL_MS = 3000;
+const wtReportCache = new Map(); // repo.root -> { sig, at, report }
+
+function cachedWorktreeReport(repo, opts) {
+  // The options can legitimately change between requests (devCommand override, the live
+  // preview's hidden tree) — a differing signature recomputes rather than serving stale shape.
+  const sig = JSON.stringify([opts.devCommand || null, opts.excludePaths || null, opts.skipPort]);
+  const hit = wtReportCache.get(repo.root);
+  if (hit && hit.sig === sig && Date.now() - hit.at < WT_REPORT_TTL_MS) return hit.report;
+  const report = worktreeReport(repo, opts);
+  wtReportCache.set(repo.root, { sig, at: Date.now(), report });
+  return report;
+}
+
+function bustWorktreeCache() {
+  wtReportCache.clear();
+}
+
 function api(db, repo, url, cwdRepo, serverPort) {
   const q = url.searchParams;
   const p = url.pathname;
@@ -347,7 +371,7 @@ function api(db, repo, url, cwdRepo, serverPort) {
   if (p === "/api/worktrees") {
     const override = S.effectiveConfig(db, repo.slug, "devCommand", null);
     const lp = livePreview();
-    const report = worktreeReport(repo, {
+    const report = cachedWorktreeReport(repo, {
       skipPid: process.pid,
       skipPort: serverPort,
       devCommand: override,
@@ -363,7 +387,6 @@ function api(db, repo, url, cwdRepo, serverPort) {
     annotateRemotes(report); // overlay cached remote-health probes; kicks async refresh if stale
     return report;
   }
-  if (p === "/api/loose") return S.listLooseEnds(db, repo.id).map(decodeRefs);
   if (p === "/api/threads") return S.listThreads(db, repo.id).map((t) => withWork(db, t));
   const m = p.match(/^\/api\/thread\/(\d+)$/);
   if (m) {
@@ -764,6 +787,8 @@ export function serve({ port = 4477, cwd = process.cwd() } = {}) {
           const body = await readJsonBody(req);
           if (body === null) return sendJson(res, 400, { error: "invalid JSON body" });
           const result = await writeApi(db, scoped, url, body, port);
+          // a write just changed the world the report describes — the next poll must see it live
+          bustWorktreeCache();
           const status = result && result.__status ? result.__status : 200;
           if (result) delete result.__status;
           return sendJson(res, status, result);
