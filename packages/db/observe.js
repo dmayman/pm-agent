@@ -119,7 +119,7 @@ Respond with ONLY a JSON object (no prose, no code fence) of this shape:
   ]
 }
 
-Rules: "goals" may be an empty array only if the excerpt truly frames no goal (rare). Set "completed": true ONLY when this excerpt's evidence shows the durable goal is ACHIEVED — merged AND verified AND the user has moved on; when in doubt, false. Use "deferred" ONLY for things explicitly punted to later — those become tracked loose ends. Omit empty "refs".${known}
+Rules: "goals" may be an empty array only if the excerpt truly frames no goal (rare). Set "completed": true ONLY when this excerpt's evidence shows the durable goal is ACHIEVED — merged AND verified AND the user has moved on; when in doubt, false. Use "deferred" ONLY for things explicitly punted to later — those become tracked loose ends. REFS — when an event touches a git branch, an open/merged pull request, or a GitHub issue that appears in the excerpt (branch names show up in the ACTION lines, e.g. checkout/push/pr commands), attach it in "refs" ("branch", "pr", "issue"): these are how work attributes to an initiative that has no issue number. Omit empty "refs".${known}
 
 Excerpt:
 ---
@@ -329,6 +329,12 @@ export async function applyCapture(
       if (Number.isInteger(issueNum) && issueNum > 0) {
         S.linkIssueToThread(db, repo.id, issueNum, threadId);
       }
+      // Bridge branch/PR → initiative membership (#39): goal-first threads usually have no
+      // issue number, so this is the ONLY path that attributes their open branches / merged PRs
+      // to them. The merged flag is derived later, deterministically, in refreshThreadRefs.
+      if (e.refs?.branch) S.linkRefToThread(db, repo.id, threadId, "branch", e.refs.branch);
+      if (e.refs?.pr != null && e.refs.pr !== "" && e.refs.pr !== 0)
+        S.linkRefToThread(db, repo.id, threadId, "pr", e.refs.pr);
     }
   }
 
