@@ -122,8 +122,10 @@ is where the ledger picks up.)
   safe.
 - Worktrees are **reusable**: a worktree is a slot, not a branch. When a branch merges
   and is deleted, its worktree is freed and can host the next branch.
-- Location: `.worktrees/` at the repo root (git-ignored).
-- Naming: `<repo>-worktree-1`, `-2`, `-3` — a small numbered pool, not one-per-branch.
+- Location + naming: generic numbered **siblings** of the main checkout — `../<repo>-1`,
+  `../<repo>-2` (the next free number) — **never** named after the branch. This matches
+  the dashboard's port-slot model (main = 0, extra trees 1, 2, …), and the dashboard's
+  `+ worktree` button already creates them this way.
 - Aim for **few** worktrees/branches open at once. Fewer open branches = less to keep
   in sync = fewer ways to collide.
 
