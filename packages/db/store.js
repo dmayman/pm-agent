@@ -156,6 +156,8 @@ CREATE TABLE IF NOT EXISTS session_log (
   cursor_start INTEGER,              -- prior cursor = slice start
   digest       TEXT NOT NULL,        -- untruncated USER/CLAUDE/ACTION digest for this turn
   char_count   INTEGER,
+  distilled_at  TEXT,                -- set by the worker when the distiller succeeded for this turn
+  distill_error TEXT,                -- set when the distiller FAILED (after retries) — dropped-turn audit
   created_at   TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS session_log_turn ON session_log(session_id, turn);
@@ -172,6 +174,7 @@ CREATE TABLE IF NOT EXISTS initiative_snapshots (
   turn        INTEGER,               -- the turn/cursor that triggered this snapshot
   goal        TEXT,
   goal_source TEXT,
+  focus       TEXT,
   why         TEXT,
   genesis     TEXT,
   summary     TEXT,
@@ -206,6 +209,14 @@ function applySchema(db) {
   ensureColumn(db, "threads", "goal_framing", "TEXT"); // the quoted moment the goal was framed
   ensureColumn(db, "threads", "why", "TEXT"); // the motivation/impact — seeded at birth
   ensureColumn(db, "threads", "why_source", "TEXT"); // 'agent' (high-trust) | 'observer' (inferred)
+  // Momentary focus — what the work is concentrating on RIGHT NOW. Deliberately volatile
+  // (rewritten every capture) so it absorbs the tactical swings that used to clobber `goal`.
+  ensureColumn(db, "threads", "focus", "TEXT");
+  // Distill outcome audit on the raw ledger (older DBs predate these columns).
+  ensureColumn(db, "session_log", "distilled_at", "TEXT");
+  ensureColumn(db, "session_log", "distill_error", "TEXT");
+  // Snapshots grew a focus column alongside goal/why so the eval can grade the goal/focus split.
+  ensureColumn(db, "initiative_snapshots", "focus", "TEXT");
   // issue_titles started life as just number→title; it's now the issues table with
   // lifecycle + thread membership. Grow it in place.
   ensureColumn(db, "issue_titles", "state", "TEXT"); // OPEN | CLOSED (from gh)
@@ -346,14 +357,39 @@ export function findThreadByTitle(db, repoId, title) {
   );
 }
 
+// Title normalization for matching (NOT storage): fold case, collapse whitespace, strip
+// trailing punctuation — so "Auth Hardening" and "auth hardening." resolve to one initiative
+// instead of forking. The stored title keeps its original casing.
+export function normalizeTitle(s) {
+  return String(s)
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.!?…:;,]+$/, "");
+}
+
+// Case/whitespace/punctuation-insensitive title lookup (see normalizeTitle). Threads per repo
+// are few, so a JS-side scan is fine — SQL lower() can't collapse whitespace anyway.
+export function findThreadByNormalizedTitle(db, repoId, title) {
+  const want = normalizeTitle(title);
+  if (!want) return null;
+  const rows = db
+    .prepare("SELECT * FROM threads WHERE repo_id = ? ORDER BY id DESC")
+    .all(repoId);
+  return rows.find((t) => normalizeTitle(t.title) === want) || null;
+}
+
 // Resolve a thread by id or title, creating it if missing (so callers can just name it).
+// Matching is exact first, then normalized (case/whitespace/punctuation-insensitive) — only
+// a genuinely new title creates a thread, and creation preserves the exact given title.
 export function resolveThread(db, repoId, ref, { genesis = null } = {}) {
   if (ref == null || ref === "") return null;
   if (/^\d+$/.test(String(ref))) {
     const t = getThread(db, Number(ref));
     if (t && t.repo_id === repoId) return t.id;
   }
-  const existing = findThreadByTitle(db, repoId, String(ref));
+  const existing =
+    findThreadByTitle(db, repoId, String(ref)) || findThreadByNormalizedTitle(db, repoId, String(ref));
   if (existing) return existing.id;
   return createThread(db, repoId, { title: String(ref), genesis });
 }
@@ -398,6 +434,11 @@ export function goalSource(db, id) {
 // (source='observer') writes only when there's no agent goal already, so its inference can
 // sharpen an observer goal but never clobber a high-trust one. `framing` is the quoted moment
 // the goal was framed; it's stored once (first writer wins) as audit/eval fodder.
+//
+// The second half of the guard lives at the prompt level: the distiller is shown each
+// initiative's CURRENT goal and told to return goal=null when it's unchanged (the common
+// case), so an observer write only reaches here on a genuine reframe/sharpening — tactical
+// swings land in `focus` (setThreadFocus) instead of overwriting the goal.
 export function setThreadGoal(db, id, { goal = undefined, framing = undefined, source = "observer" } = {}) {
   if (goal === undefined || goal == null || String(goal).trim() === "") return false;
   if (source !== "agent" && goalSource(db, id) === "agent") return false; // don't clobber the agent's goal
@@ -417,16 +458,45 @@ export function setThreadGoal(db, id, { goal = undefined, framing = undefined, s
   return true;
 }
 
+// Set a thread's momentary focus — what the work is concentrating on RIGHT NOW. No trust
+// guard and no first-writer-wins: focus is MEANT to swing every capture; it's the pressure
+// valve that keeps tactical shifts out of the durable goal.
+export function setThreadFocus(db, id, focus) {
+  if (focus == null || String(focus).trim() === "") return false;
+  db.prepare("UPDATE threads SET focus = ?, updated_at = ? WHERE id = ?").run(
+    String(focus).trim(),
+    now(),
+    id
+  );
+  return true;
+}
+
+// Conservative done-flip for the distiller's `completed` signal: only an ACTIVE thread moves
+// to done, so an agent/user who reopened (or marked blocked/in_review) is never overridden.
+// Returns true if the flip happened.
+export function completeThreadIfActive(db, id) {
+  const r = db
+    .prepare("UPDATE threads SET status = 'done', updated_at = ? WHERE id = ? AND status = 'active'")
+    .run(now(), id);
+  return r.changes > 0;
+}
+
 // The trust level of a thread's current 'why' ('agent' beats 'observer').
 export function whySource(db, id) {
   const row = db.prepare("SELECT why_source FROM threads WHERE id = ?").get(id);
   return row ? row.why_source : null;
 }
 
-// Seed or refine a thread's 'why' (motivation/impact). Same trust guard as setThreadGoal.
+// Seed or refine a thread's 'why' (motivation/impact). Agent writes are authoritative; the
+// observer FILLS an empty why but never rewrites one — the why is the durable motivation, and
+// letting the observer churn it every turn is the same failure mode the goal/focus split fixes.
 export function setThreadWhy(db, id, { why = undefined, source = "observer" } = {}) {
   if (why === undefined || why == null || String(why).trim() === "") return false;
-  if (source !== "agent" && whySource(db, id) === "agent") return false;
+  if (source !== "agent") {
+    const cur = db.prepare("SELECT why, why_source FROM threads WHERE id = ?").get(id);
+    if (cur && cur.why_source === "agent") return false; // never clobber the agent's why
+    if (cur && cur.why) return false; // observer fills only when empty
+  }
   db.prepare("UPDATE threads SET why = ?, why_source = ?, updated_at = ? WHERE id = ?").run(
     String(why).trim(),
     source,
@@ -718,7 +788,22 @@ export function appendSessionLog(db, repoId, { sessionId, turn, cursorStart = nu
   ).run(repoId, sessionId, Number(turn) || 0, cursorStart, digest, digest.length, now());
 }
 
-// Snapshot an initiative's current state (goal/why/genesis/summary + its event set) — the
+// Record the distill outcome for one raw-ledger turn: success stamps distilled_at, failure
+// stores the reason in distill_error (each clears the other, so a retried turn ends clean).
+// Makes dropped turns queryable: SELECT count(*) FROM session_log WHERE distill_error IS NOT NULL.
+export function markSessionLogDistilled(db, sessionId, turn, { error = null } = {}) {
+  if (!sessionId) return;
+  db.prepare(
+    "UPDATE session_log SET distilled_at = ?, distill_error = ? WHERE session_id = ? AND turn = ?"
+  ).run(
+    error ? null : now(),
+    error ? String(error).slice(0, 300) : null,
+    sessionId,
+    Number(turn) || 0
+  );
+}
+
+// Snapshot an initiative's current state (goal/focus/why/genesis/summary + its event set) — the
 // librarian's trajectory at this turn. Reads live from the thread; call after synthesis.
 export function snapshotInitiative(db, repoId, threadId, { sessionId = null, turn = null } = {}) {
   const t = getThread(db, threadId);
@@ -729,9 +814,9 @@ export function snapshotInitiative(db, repoId, threadId, { sessionId = null, tur
     .map((r) => r.id);
   db.prepare(
     `INSERT INTO initiative_snapshots
-       (repo_id, thread_id, session_id, turn, goal, goal_source, why, genesis, summary,
+       (repo_id, thread_id, session_id, turn, goal, goal_source, focus, why, genesis, summary,
         event_count, event_ids, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     repoId,
     threadId,
@@ -739,6 +824,7 @@ export function snapshotInitiative(db, repoId, threadId, { sessionId = null, tur
     turn == null ? null : Number(turn),
     t.goal || null,
     t.goal_source || null,
+    t.focus || null,
     t.why || null,
     t.genesis || null,
     t.summary || null,

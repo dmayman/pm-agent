@@ -98,13 +98,35 @@ export function computeStatuses(db, repo) {
   return changedThreads;
 }
 
+// Deterministic initiative done-detection, deliberately conservative: an ACTIVE thread flips
+// to done only when it has at least one linked issue, ALL of its linked issues are closed,
+// and none has an open (unmerged) branch. A thread with ZERO linked issues is never auto-done
+// here — whether pure-conversation work finished is the distiller's call (`completed`), not
+// lifecycle's. Only 'active' threads flip, so a reopened/blocked/in_review thread is left
+// alone. Returns the set of thread ids flipped (for re-synthesis).
+export function autoCompleteThreads(db, repo) {
+  const flipped = new Set();
+  for (const t of S.listThreads(db, repo.id, { status: "active" })) {
+    const issues = S.issuesForThread(db, t.id);
+    if (!issues.length) continue;
+    const allClosed = issues.every((i) => i.state === "CLOSED");
+    const hasOpenBranch = issues.some((i) => i.branch);
+    if (allClosed && !hasOpenBranch) {
+      S.updateThread(db, t.id, { status: "done" });
+      flipped.add(t.id);
+    }
+  }
+  return flipped;
+}
+
 // The deterministic git/GitHub refresh: re-pull issue state + open branches and recompute
-// lifecycle. No Haiku — cheap enough to run silently on a heartbeat. Returns
-// { changedThreads, ghAvailable }.
+// lifecycle (per-issue statuses, then initiative-level done-detection on top). No Haiku —
+// cheap enough to run silently on a heartbeat. Returns { changedThreads, ghAvailable }.
 export function refreshLifecycle(db, repo) {
   const issues = syncIssues(db, repo); // open/closed state (null if gh unavailable)
   syncOpenBranches(db, repo); // unfinished-branch marks (uses merged-PR exclusion)
   const changedThreads = computeStatuses(db, repo);
+  for (const id of autoCompleteThreads(db, repo)) changedThreads.add(id);
   return { changedThreads, ghAvailable: issues !== null };
 }
 

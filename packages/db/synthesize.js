@@ -66,10 +66,14 @@ function buildThreadPrompt(db, repo, threadId) {
 
   // The durable goal (#26) anchors the summary. It's held in its own column and refined under a
   // trust guard, so we hand it to the model verbatim and tell it to preserve — not re-derive —
-  // it, keeping the goal steady while the progress narrative around it evolves.
+  // it, keeping the goal steady while the progress narrative around it evolves. The momentary
+  // focus rides along as context for what's happening NOW, explicitly fenced off from the goal.
   const goalBlock =
     (thread.goal ? `Durable goal (preserve this verbatim as the Goal line — do NOT reword it): ${thread.goal}\n` : "") +
-    (thread.why ? `Why it matters: ${thread.why}\n` : "");
+    (thread.why ? `Why it matters: ${thread.why}\n` : "") +
+    (thread.focus
+      ? `Current focus (the tactic of the moment — use it for the "where things stand" part only; it is NOT the goal): ${thread.focus}\n`
+      : "");
 
   // The issue roster with lifecycle status is what lets the summary say what's still open /
   // next; the work log carries what actually happened.
