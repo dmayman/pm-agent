@@ -292,7 +292,7 @@ export async function applyCapture(
       touched.add(threadId);
       // Bridge issue→initiative membership: the event names its thread AND a GitHub issue,
       // but membership lives in issue_titles.thread_id, which logEvent doesn't touch. Attach
-      // it as a SOFT link so the initiative shows the issue (and the recluster can re-home).
+      // it as a SOFT link so the initiative shows the issue (a later soft link can re-home).
       const issueNum = Number(e.refs?.issue);
       if (Number.isInteger(issueNum) && issueNum > 0) {
         S.linkIssueToThread(db, repo.id, issueNum, threadId);
