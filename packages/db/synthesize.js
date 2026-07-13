@@ -88,19 +88,28 @@ function buildThreadPrompt(db, repo, threadId) {
 
   const prompt =
     `You are writing the standing summary for one initiative — an arc of work defined by a ` +
-    `durable GOAL — that a developer will skim weeks later to remember where things stand. ` +
-    `Tell the WHOLE story as progress against that goal.\n\n` +
-    `Write it in this exact shape:\n` +
-    `1. A first sentence that is the headline — what this initiative is and its current state — ` +
-    `wrapped in **double asterisks** so it renders bold.\n` +
-    `2. Then 1-3 more sentences of plain language covering, in order: the GOAL (what this is ` +
-    `trying to achieve), what's been TRIED or accomplished so far, and — if any issues above ` +
-    `are not yet done — what's DONE versus what's LEFT. If there is open or not-started work, ` +
-    `you MUST end by saying what's next.\n\n` +
-    `Rules: plain, human language a non-technical person could follow. No file names, no commit ` +
-    `hashes, don't enumerate commits — synthesize the arc into its point. Hold the goal steady: ` +
-    `if a durable goal is given below, state it as the goal verbatim rather than re-deriving one ` +
-    `from recent events.\n\n` +
+    `durable GOAL. A developer will skim it weeks later to remember what this initiative is and ` +
+    `why it exists. Describe the initiative as a THING that stands on its own, not a stream of ` +
+    `recent events.\n\n` +
+    `Write it in this EXACT shape:\n` +
+    `1. A first sentence — wrapped in **double asterisks** so it renders bold — that says what ` +
+    `this initiative IS and why it matters (its point, the impact it has). Make it EVERGREEN: it ` +
+    `must read the same whether the work just started or finished long ago. Put NO status in it — ` +
+    `forbidden words include "underway", "in progress", "merged", "shipped", "done", "complete", ` +
+    `"wins", "progress", "now", "landed". Anchor it on the durable goal and the "why" below when ` +
+    `they are given; otherwise infer the point from the initiative's context.\n` +
+    `2. Then 1 to 3 plain sentences: what has actually been accomplished so far, and — only if the ` +
+    `work is unfinished — what is still open. Concrete but high level.\n\n` +
+    `Hard rules:\n` +
+    `- Plain, human language a non-technical person could follow. Short: a bold headline plus a ` +
+    `few sentences, never paragraphs.\n` +
+    `- Do NOT recount technical history, decisions, or a play-by-play. No file names, no function ` +
+    `names, no commit hashes, no enumerating commits or issue numbers. Synthesize the arc into its ` +
+    `point.\n` +
+    `- The durable goal and "why" are the BACKBONE of the headline. The work log and issue roster ` +
+    `are only EVIDENCE for what's been done and what's left — never the subject of the summary.\n` +
+    `- Hold the goal steady: if a durable goal is given below, treat it as the fixed point the ` +
+    `headline describes rather than re-deriving a goal from recent events.\n\n` +
     `Initiative: ${thread.title}\n\n` +
     goalBlock +
     (goalBlock ? "\n" : "") +
