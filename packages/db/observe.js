@@ -9,10 +9,15 @@ import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync } from "
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import * as S from "./store.js";
-import { runHaiku, runHaikuOnce } from "./haiku.js";
+import { runHaikuOnce } from "./haiku.js";
 
 const MIN_DIGEST_CHARS = 200; // below this there's nothing worth distilling
-const MAX_DIGEST_CHARS = 8000; // keep Haiku's input cheap; take the tail if larger
+const MAX_DIGEST_CHARS = 8000; // keep Haiku's input cheap; head+tail if larger
+// Head+tail clamp, not tail-only: the OPENING user message is where the goal is framed, and a
+// tail slice on a long turn cut it out — exactly the text the distiller needs most. Keep the
+// first ~2k (the framing) and the last ~6k (the outcome), and mark the elision.
+const DIGEST_HEAD_CHARS = 2000;
+const DIGEST_TAIL_CHARS = MAX_DIGEST_CHARS - DIGEST_HEAD_CHARS; // 6000
 
 function readStdin() {
   try {
@@ -27,7 +32,8 @@ function readStdin() {
 // the summary lives in Claude's own words anyway. With { raw: true } the per-message and
 // whole-digest clamps are lifted — that's the untruncated version the eval harness tees into
 // the raw ledger; the clamped default is what feeds the (token-metered) Haiku prompt.
-function digestLines(lines, { raw = false } = {}) {
+// Exported for tests.
+export function digestLines(lines, { raw = false } = {}) {
   const out = [];
   for (const line of lines) {
     let obj;
@@ -57,7 +63,12 @@ function digestLines(lines, { raw = false } = {}) {
     }
   }
   let text = out.join("\n");
-  if (!raw && text.length > MAX_DIGEST_CHARS) text = text.slice(-MAX_DIGEST_CHARS);
+  if (!raw && text.length > MAX_DIGEST_CHARS) {
+    text =
+      text.slice(0, DIGEST_HEAD_CHARS) +
+      "\n…[truncated]…\n" +
+      text.slice(-DIGEST_TAIL_CHARS);
+  }
   return text;
 }
 
@@ -73,6 +84,10 @@ function buildPrompt(digest, initiatives) {
 
 1) GOALS — Identify the SET of durable goals this session advances or spawns. Treat the FIRST user message of the excerpt as a goal-candidate: the moment a goal is framed is often the opening prompt, and it must not slip by as ordinary chatter. For each goal decide whether it advances one of the existing initiatives (below) or is a NEW goal.
 
+   GOAL vs FOCUS — the GOAL is the durable outcome framed when the arc began: what will be true when the work is finished. The FOCUS is what the work is concentrating on RIGHT NOW. When attention shifts to a sub-question, a verification pass, a simplification, a bug, or an implementation phase, that is a change of FOCUS — the goal has NOT changed. The goal changes ONLY when the user genuinely reframes what the arc is FOR. Example: goal "give the coach a per-muscle recovery readiness signal" stays the goal while the session's focus swings to "verify whether the tier 2 muscle taxonomy serves practical value" — the verification is focus, never the new goal.
+
+   For an EXISTING initiative ("isNew": false): if its goal shown below is still the right durable goal, return "text": null — null means "goal unchanged", and it is the COMMON case. Return a non-null "text" for an existing initiative ONLY when the user genuinely reframed (or the goal was empty and this excerpt frames it).
+
    Emit a SEPARATE goal entry ONLY for a durable goal with its OWN done-signal — a ticket, a distinct workstream, or a shippable outcome that can independently be called finished. A step taken WITHIN a goal (e.g. "run the test suite", "enrich one issue") is an EVENT, not a goal. Apply this test to avoid over-fragmenting: if it has no independent done-signal, it is not its own goal.
 
    TITLES — every NEW goal ("isNew": true) MUST get its OWN distinct, specific short title. Do NOT file multiple new goals under a single existing umbrella/surface title — that silently collapses them back into one initiative. Reuse an EXACT existing title ONLY when "isNew": false, i.e. the goal genuinely advances that initiative. Example: in a retro that frames "reviewable set_plan diffs" AND "fix the deterministic duplicate-row projection", those are TWO separate new initiatives with two distinct titles (e.g. "Reviewable set_plan diffs" and "Deterministic duplicate-row cleanup") — NOT two goals both titled "Plan Model & Execution".
@@ -85,11 +100,13 @@ Respond with ONLY a JSON object (no prose, no code fence) of this shape:
 {
   "goals": [
     {
-      "text": "the durable goal in one line — what the work aims to achieve (not the tactic of the moment)",
       "initiative": "the EXACT title of a matching initiative above, or a short new title if none fits",
       "isNew": true or false,
-      "framing": "a short quote or paraphrase of the moment the goal was framed (usually the opening user message)",
-      "shift": "if the goal sharpened versus the matched initiative's goal, say how — else null"
+      "text": "for a NEW goal: the durable goal in one line — the outcome, not the tactic of the moment. For an existing initiative: null when its goal is unchanged (the common case), else the genuinely reframed goal",
+      "focus": "one line: what the work is concentrating on right now (this may swing every turn)",
+      "why": "why the durable goal matters, if evident from the excerpt — else null",
+      "framing": "a short quote or paraphrase of the moment the goal was framed (usually the opening user message) — else null",
+      "completed": false
     }
   ],
   "events": [
@@ -102,7 +119,7 @@ Respond with ONLY a JSON object (no prose, no code fence) of this shape:
   ]
 }
 
-Rules: "goals" may be an empty array only if the excerpt truly frames no goal (rare). Use "deferred" ONLY for things explicitly punted to later — those become tracked loose ends. Omit empty "refs".${known}
+Rules: "goals" may be an empty array only if the excerpt truly frames no goal (rare). Set "completed": true ONLY when this excerpt's evidence shows the durable goal is ACHIEVED — merged AND verified AND the user has moved on; when in doubt, false. Use "deferred" ONLY for things explicitly punted to later — those become tracked loose ends. Omit empty "refs".${known}
 
 Excerpt:
 ---
@@ -151,8 +168,13 @@ export function extractSessionAnalysis(text) {
         } else if (obj.goal && typeof obj.goal === "object" && !Array.isArray(obj.goal)) {
           goals = [obj.goal]; // legacy singular-goal shape → one-element array
         }
-        // Keep only real goal objects (must carry a text); drops nulls/strings/junk.
-        goals = goals.filter((g) => g && typeof g === "object" && !Array.isArray(g) && g.text);
+        // Keep only real goal objects; drops nulls/strings/junk. A goal entry must carry an
+        // initiative (the ledger can't file it otherwise) OR a text (legacy shapes that
+        // predate the initiative field). `text: null` with an initiative is VALID — it means
+        // "goal unchanged" and still carries focus/why/completed for that initiative.
+        goals = goals.filter(
+          (g) => g && typeof g === "object" && !Array.isArray(g) && (g.initiative || g.text)
+        );
         return { goals, events };
       }
     } catch {
@@ -256,25 +278,35 @@ export async function applyCapture(
   // Goal-first capture (#26/#36): seed/refine each initiative's durable goal from what this
   // session pursues, before any events. resolveThread creates the initiative by title when it's
   // new; setThreadGoal's trust guard refines an observer goal but never clobbers an agent one.
+  // `text: null` means "goal unchanged" (the distiller sees each initiative's current goal and
+  // is told to return null unless the user genuinely reframed) — the momentary tactic lands in
+  // `focus`, which is written unconditionally because it's MEANT to swing turn to turn.
   // Guard against same-title collapse: if two goals in ONE batch resolve to the same thread id
   // (e.g. the model filed two new workstreams under one umbrella title), the second setThreadGoal
   // would silently overwrite the first and lose a workstream. Keep the first, warn, drop the rest
   // — the prompt is told to give each new goal a distinct title, so this only fires on model drift.
   const seededThisBatch = new Set();
   for (const g of goals) {
-    if (!g || !g.text || !g.initiative) continue;
+    if (!g || !g.initiative) continue;
     const gid = S.resolveThread(db, repo.id, String(g.initiative));
     if (!gid) continue;
     if (seededThisBatch.has(gid)) {
       process.stderr.write(
         `warning: two goals in one turn resolved to the same initiative "${g.initiative}" (#${gid}); ` +
-          `keeping the first, dropping: ${g.text}\n`
+          `keeping the first, dropping: ${g.text || "(goal unchanged)"}\n`
       );
       continue;
     }
     seededThisBatch.add(gid);
-    S.setThreadGoal(db, gid, { goal: g.text, framing: g.framing, source: "observer" });
+    if (g.text) S.setThreadGoal(db, gid, { goal: g.text, framing: g.framing, source: "observer" });
+    if (g.focus) S.setThreadFocus(db, gid, g.focus);
+    // `why` fills when empty and observer-sourced updates never clobber an agent-seeded why
+    // (the trust guard inside setThreadWhy).
+    if (g.why) S.setThreadWhy(db, gid, { why: g.why, source: "observer" });
     if (g.framing) S.setThreadGenesis(db, gid, String(g.framing));
+    // Conservative done-flip: the distiller vouches the durable goal is achieved (merged +
+    // verified + moved on). Only an ACTIVE thread flips — a reopened/blocked one is left alone.
+    if (g.completed === true) S.completeThreadIfActive(db, gid);
     touched.add(gid);
   }
 
@@ -323,7 +355,9 @@ export async function applyCapture(
   return touched;
 }
 
-// The detached worker: call Haiku, write the events it distilled, clean up.
+// The detached worker: call Haiku (with retries — we're already off the user's turn, so we can
+// afford them), write the events it distilled, and record the distill outcome on the raw
+// ledger row so dropped turns are queryable instead of silent. Clean up either way.
 export async function observeWorker(jobFile) {
   let job;
   try {
@@ -334,14 +368,24 @@ export async function observeWorker(jobFile) {
   // Open the DB first so the Haiku call can be metered against this repo.
   const db = S.openDb();
   const repo = db.prepare("SELECT * FROM repos WHERE slug = ?").get(job.repoSlug);
-  const output = runHaiku(job.prompt, job.root, {
-    meter: repo ? { db, repoId: repo.id, kind: "observer" } : null,
-  });
-  if (!output) {
+  const { text, error, attempts } = await callModelWithRetry(
+    job.prompt,
+    job.root,
+    repo ? { db, repoId: repo.id, kind: "observer" } : null,
+    { timeout: LIVE_TIMEOUT_MS, backoff: LIVE_BACKOFF_MS }
+  );
+  if (!text) {
+    if (repo) {
+      try {
+        S.markSessionLogDistilled(db, job.sessionId, job.turn, {
+          error: `${error || "no model output"} (${attempts} attempt(s))`,
+        });
+      } catch {}
+    }
     cleanup(jobFile);
     return;
   }
-  const { goals, events } = extractSessionAnalysis(output);
+  const { goals, events } = extractSessionAnalysis(text);
   if (repo) {
     await applyCapture(db, repo, {
       goals,
@@ -350,6 +394,9 @@ export async function observeWorker(jobFile) {
       turn: job.turn,
       refreshLifecycle: true,
     });
+    try {
+      S.markSessionLogDistilled(db, job.sessionId, job.turn);
+    } catch {}
   }
   cleanup(jobFile);
 }
@@ -434,8 +481,23 @@ export function replay(flags = {}) {
       const { text, error, attempts } = await callModelWithRetry(
         buildPrompt(digest, initiatives),
         root,
-        { db: target, repoId: repo.id, kind: "observer" }
+        { db: target, repoId: repo.id, kind: "observer" },
+        { timeout: REPLAY_TIMEOUT_MS, backoff: REPLAY_BACKOFF_MS }
       );
+      // Mirror the raw-ledger row into the TARGET and record the distill outcome there — the
+      // same success/failure audit the live worker writes, so a replayed ledger is queryable
+      // the same way (SELECT ... WHERE distill_error IS NOT NULL). Idempotent per (session,turn).
+      try {
+        S.appendSessionLog(target, repo.id, {
+          sessionId: row.session_id,
+          turn: row.turn,
+          cursorStart: row.cursor_start,
+          digest,
+        });
+        S.markSessionLogDistilled(target, row.session_id, row.turn, {
+          error: text ? null : `${error} (${attempts} attempt(s))`,
+        });
+      } catch {}
       if (!text) {
         dropped++;
         process.stdout.write(`  ${tag}: DROPPED after ${attempts} attempt(s) — ${error}\n`);
@@ -465,22 +527,27 @@ export function replay(flags = {}) {
   return run();
 }
 
-// Replay batch-call tuning (offline only — the live Stop hook keeps runHaiku's defaults).
-const REPLAY_TIMEOUT_MS = 150000; // digests can be 20k+ chars; the live 60s is too tight for a batch
+// Model-call tuning. The live worker is detached (the user's turn already ended), so it can
+// afford a couple of quick retries; replay is offline batch work and retries harder with a
+// longer per-call timeout (its digests run 20k+ chars vs the live 8k clamp).
+const LIVE_TIMEOUT_MS = 60000;
+const LIVE_BACKOFF_MS = [2000, 5000]; // 2 retries with short backoff
+const REPLAY_TIMEOUT_MS = 150000;
 const REPLAY_BACKOFF_MS = [2000, 6000, 15000]; // exponential-ish waits before retry 2, 3, 4
 const REPLAY_PACING_MS = 1000; // small gap between turns to avoid throttling
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// One model call for replay, retried on failure with backoff. Returns { text, error, attempts }.
+// One model call, retried on failure with backoff. Returns { text, error, attempts }.
 // Surfaces the last failure reason (timeout/stderr/exit) so a dropped turn is never opaque.
-async function callModelWithRetry(prompt, cwd, meter) {
-  const maxAttempts = REPLAY_BACKOFF_MS.length + 1;
+// Shared by the live worker (short backoff) and replay (longer timeout, more retries).
+async function callModelWithRetry(prompt, cwd, meter, { timeout, backoff }) {
+  const maxAttempts = backoff.length + 1;
   let last = { text: null, error: "not attempted" };
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    last = runHaikuOnce(prompt, cwd, { timeout: REPLAY_TIMEOUT_MS, meter });
+    last = runHaikuOnce(prompt, cwd, { timeout, meter });
     if (last.text) return { ...last, attempts: attempt };
-    if (attempt < maxAttempts) await sleep(REPLAY_BACKOFF_MS[attempt - 1]);
+    if (attempt < maxAttempts) await sleep(backoff[attempt - 1]);
   }
   return { ...last, attempts: maxAttempts };
 }

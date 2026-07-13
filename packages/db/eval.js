@@ -52,6 +52,7 @@ function buildBundle(db, repo, session, rawLog, snaps) {
     for (const s of rows) {
       parts.push(
         `- turn ${s.turn}: goal=${JSON.stringify(s.goal)} [source:${s.goal_source || "—"}] · ` +
+          `focus=${JSON.stringify(s.focus ?? null)} · why=${JSON.stringify(s.why ?? null)} · ` +
           `events=${s.event_count} · summary=${JSON.stringify(s.summary)}`
       );
     }
@@ -64,7 +65,9 @@ function buildBundle(db, repo, session, rawLog, snaps) {
     const events = S.listEvents(db, repo.id, { threadId, limit: 200 });
     const issues = S.issuesForThread(db, threadId);
     parts.push(`\n### initiative #${threadId} — "${t.title}"`);
+    parts.push(`- status: ${t.status}`);
     parts.push(`- goal: ${JSON.stringify(t.goal)}  (source: ${t.goal_source || "—"})`);
+    parts.push(`- focus: ${JSON.stringify(t.focus ?? null)}`);
     parts.push(`- goal_framing: ${JSON.stringify(t.goal_framing)}`);
     parts.push(`- why: ${JSON.stringify(t.why)}  (source: ${t.why_source || "—"})`);
     parts.push(`- genesis: ${JSON.stringify(t.genesis)}`);
@@ -78,15 +81,16 @@ function buildBundle(db, repo, session, rawLog, snaps) {
 }
 
 function buildJudgePrompt(bundle) {
-  return `You are grading a live "goal-first capture" system for a developer's work ledger. The system's job is to watch a coding session and, as work happens, capture the DURABLE GOAL of each initiative and refine it over time — not reconstruct goals after the fact.
+  return `You are grading a live "goal-first capture" system for a developer's work ledger. The system's job is to watch a coding session and, as work happens, capture the DURABLE GOAL of each initiative and hold it steady over time — not reconstruct goals after the fact. The system splits two fields per initiative: GOAL (the durable outcome framed when the arc began) and FOCUS (what the work is concentrating on right now — expected to swing turn to turn, absorbing the tactical shifts so they never overwrite the goal).
 
-Below is a bundle from ONE real coding session: the RAW per-turn transcript digests (ground truth), the TRAJECTORY of how the system's initiative snapshots evolved turn by turn, and the FINAL initiative state.
+Below is a bundle from ONE real coding session: the RAW per-turn transcript digests (ground truth), the TRAJECTORY of how the system's initiative snapshots evolved turn by turn (each snapshot carries goal AND focus), and the FINAL initiative state.
 
-Grade each of these three points on a 0-3 scale (0=absent, 1=poor, 2=decent, 3=excellent), each with a one-line evidence citation to a specific turn or snapshot:
+Grade each of these four points on a 0-3 scale (0=absent, 1=poor, 2=decent, 3=excellent), each with a one-line evidence citation to a specific turn or snapshot:
 
 1. GOAL SEEDED AT BIRTH — Was a durable goal (and/or genesis) captured early, ideally before any GitHub issue or branch existed, from the moment the goal was framed (often the opening user message)?
-2. GOAL REFINED, NOT CLOBBERED — Across turns/snapshots, did the durable goal SHARPEN while holding steady (compare snapshots), rather than being overwritten by the tactic of the moment or frozen at the first guess?
+2. GOAL HELD, FOCUS ABSORBED THE SWINGS — Across turns/snapshots, did the durable goal HOLD STEADY, changing only on a genuine reframe of what the arc is FOR (a sharpening counts; a rewrite to the tactic of the moment does not)? Did the tactical shifts — sub-questions, verification passes, implementation phases — land in the FOCUS field instead of overwriting the goal? Penalize a goal that chases the tactic; penalize equally a focus field frozen while the raw ledger shows attention moving.
 3. CORRECT ATTRIBUTION — Did the session's events attribute to the RIGHT initiative (matched by its goal), or was a genuinely new goal correctly flagged — rather than collapsing into a title-matched surface thread or spawning a near-duplicate initiative?
+4. DONE & LOOSE-END HYGIENE — When the raw ledger shows an initiative's durable goal was genuinely achieved (merged, verified, user moved on), did its status reach done? Were explicitly-deferred loose ends captured as deferred events rather than lost? Penalize initiatives left active forever after their work clearly finished, and done-flips the evidence doesn't support.
 
 Then answer, in prose citing specific turns/snapshots:
 A. How well did the system ITERATE the initiative and its events over time? Where did it lag, over-fragment, or miss a shift?
