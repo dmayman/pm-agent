@@ -62,6 +62,8 @@ const ICON_PATHS = {
   arrowDown: '<line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/>',
   refresh: '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  cloud: '<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>',
+  gauge: '<path d="M12 3a9 9 0 0 0-9 9 9 9 0 0 0 1.5 5"/><path d="M21 17a9 9 0 0 0 1.5-5 9 9 0 0 0-9-9"/><line x1="12" y1="12" x2="16" y2="9"/>',
 };
 function icon(name, cls){
   return `<svg class="icon${cls ? " " + cls : ""}" viewBox="0 0 24 24" fill="none" stroke="currentColor" `
@@ -1140,6 +1142,38 @@ function primaryServicesHtml(wt){
   return `<div class="wtp-svc-nudge">No services declared — ask Claude to set up <code>.pm/services.json</code> (or run <code>/pm:services</code>).</div>`;
 }
 
+// One remote service row: a status dot (up / down / neutral-unprobed), the name + provider, the
+// branch deployed there, and links to the provider console (dashboard) and the live service (url).
+// No Start/Stop — you can't boot hosted infra from here.
+function remoteServiceRow(r){
+  // Map the probe state to the shared dot classes: "up" reuses live-green, "down" reuses stopped,
+  // and everything else ("unprobed"/"declared") renders neutral — never falsely green or red.
+  const dot = r.state === "up" ? "live" : r.state === "down" ? "down" : "unprobed";
+  const title = r.state === "up" ? "reachable" : r.state === "down" ? "unreachable"
+    : r.state === "declared" ? "no health check declared" : "checking…";
+  const provider = r.provider ? `<span class="wtp-rsvc-prov">${esc(r.provider)}</span>` : "";
+  const branch = r.branch ? `<span class="wtp-rsvc-branch" title="deployed branch/environment">${icon("branch")}${esc(r.branch)}</span>` : "";
+  const dash = r.dashboard
+    ? `<a class="wtp-svc-open" href="${esc(r.dashboard)}" target="_blank" rel="noopener" title="open console — ${esc(r.dashboard)}">${icon("gauge")}</a>` : "";
+  const open = r.url
+    ? `<a class="wtp-svc-open" href="${esc(r.url)}" target="_blank" rel="noopener" title="open service — ${esc(r.url)}">${icon("externalLink")}</a>` : "";
+  return `<div class="wtp-svc wtp-rsvc ${esc(r.state)}">`
+    + `<span class="wtp-svc-dot ${dot}" title="${esc(title)}"></span>`
+    + `<span class="wtp-svc-name" title="${esc(r.name)}">${esc(r.name)}</span>${provider}`
+    + `<span class="sp"></span>${branch}${dash}${open}</div>`;
+}
+
+// The repo-level Remote section — hosted infra (Fly/Neon/Vercel) declared in the primary's
+// manifest. Shared across branches, so it renders once for the whole panel, not per branch, and
+// only when there's at least one remote service to show.
+function remoteServicesHtml(remotes){
+  if(!remotes || !remotes.length) return "";
+  const rows = remotes.map(remoteServiceRow).join("");
+  return `<div class="wtp-remote">`
+    + `<div class="wtp-remote-head">${icon("cloud")}<span>Remote</span></div>`
+    + `<div class="wtp-svcs">${rows}</div></div>`;
+}
+
 // The restricted-mode branch row: same shell as wtpBranchRow (name, diverge chip, fixed-width
 // indicator, optional second line) — but the indicator/second-line content comes from the
 // Primary/Preview slot machinery above instead of real per-branch worktrees, except for the
@@ -1206,6 +1240,8 @@ function panelHtml(worktrees, branches, data){
       + `<span class="chev">${icon(w.mergedOpen ? "chevronDown" : "chevronRight")}</span> Merged <span class="wtp-sub">${closed.length}</span></button>`;
     if(w.mergedOpen) h += `<div class="wtp-merged">${closed.map((b) => row(b, worktrees, baseName)).join("")}</div>`;
   }
+  // Hosted infra is shared across branches, so it lives once at the panel level, below the branch list.
+  h += remoteServicesHtml(data && data.remoteServices);
   h += `</div>`;
   return h;
 }
@@ -1283,7 +1319,8 @@ async function renderWorktreePanel(force){
   const branches = data.branches || [];
   const worktreePanel = data.worktreePanel || null;
   state.wt.captureLink = data.captureLink || null;
-  state.wtData = { worktrees, branches, serverScanned: data.serverScanned, defaultBranch: data.defaultBranch, worktreePanel };
+  const remoteServices = data.remoteServices || [];
+  state.wtData = { worktrees, branches, remoteServices, serverScanned: data.serverScanned, defaultBranch: data.defaultBranch, worktreePanel };
 
   // Repos opted into the restricted layout: on first load, adopt whatever preview is already
   // running (if any) instead of showing an empty "choose a branch…" slot for something that's
@@ -1298,6 +1335,7 @@ async function renderWorktreePanel(force){
     w: worktrees.map((x) => [x.path, x.branch, x.serverState, (x.servers || []).map((s) => s.port), x.devCommand, x.ahead,
       x.servicesDeclared, x.servicesError, (x.services || []).map((s) => [s.name, s.state])]),
     b: branches.map((x) => [x.name, x.worktreePath, x.merged, x.ahead, x.committedAt]),
+    r: remoteServices.map((x) => [x.name, x.state, x.branch]),
     ui: [w.openMenu, w.editCmd, w.error, w.mergedOpen, [...w.busy]],
     p: worktreePanel,
     cl: w.captureLink,

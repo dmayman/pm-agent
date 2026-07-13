@@ -4,6 +4,7 @@
 // managing (Claude owns the ledger; see docs/ledger.md).
 
 import http from "node:http";
+import https from "node:https";
 import { spawn } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -223,6 +224,67 @@ function scopeRepo(db, cwdRepo, url) {
   return cwdRepo;
 }
 
+// ---- remote-service health probes ------------------------------------------
+// Remote services (Fly/Vercel/…) can't be port-scanned like local ones, so liveness is a plain
+// HTTP GET to their declared health URL. worktreeReport is synchronous (git + lsof) and we refuse
+// to block it on a network round-trip, so probing is decoupled: results live in this cache and the
+// /api/worktrees handler overlays the latest value while kicking an async refresh when it's stale.
+// Request-driven and self-limiting — nothing is probed unless the panel is actually asking for it.
+// The health URL comes from .pm/services.json, which already grants command execution, so an
+// outbound GET is strictly less powerful; we still keep it minimal — GET only, short timeout, no
+// redirect-following, body discarded.
+const REMOTE_PROBE_TTL_MS = 15000; // how long a cached up/down stays fresh
+const REMOTE_PROBE_TIMEOUT_MS = 4000;
+const remoteHealth = new Map(); // healthUrl -> { state: "up" | "down", checkedAt: number }
+const remoteInFlight = new Set(); // healthUrls with a probe currently outstanding
+
+function probeRemote(healthUrl) {
+  if (remoteInFlight.has(healthUrl)) return;
+  let u;
+  try {
+    u = new URL(healthUrl);
+  } catch {
+    remoteHealth.set(healthUrl, { state: "down", checkedAt: Date.now() });
+    return;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return; // only http(s) is probeable
+  const mod = u.protocol === "https:" ? https : http;
+  remoteInFlight.add(healthUrl);
+  const settle = (state) => {
+    remoteInFlight.delete(healthUrl);
+    remoteHealth.set(healthUrl, { state, checkedAt: Date.now() });
+  };
+  let req;
+  try {
+    req = mod.get(healthUrl, { timeout: REMOTE_PROBE_TIMEOUT_MS }, (res) => {
+      const status = res.statusCode || 0;
+      res.resume(); // drain + discard the body (we only care about reachability/status)
+      settle(status > 0 && status < 400 ? "up" : "down");
+    });
+  } catch {
+    settle("down");
+    return;
+  }
+  req.on("timeout", () => req.destroy(new Error("timeout")));
+  req.on("error", () => settle("down"));
+}
+
+// Overlay cached probe state onto the report's repo-level remote services, kicking a refresh for
+// any whose cache is missing or stale. Never blocks: returns immediately with whatever's cached
+// (a not-yet-probed remote keeps its neutral "unprobed"/"declared" state).
+function annotateRemotes(report) {
+  const now = Date.now();
+  for (const r of report.remoteServices || []) {
+    if (!r.healthUrl) continue; // non-HTTP / unresolvable — stays neutral
+    const hit = remoteHealth.get(r.healthUrl);
+    if (hit) {
+      r.state = hit.state;
+      r.checkedAt = hit.checkedAt;
+    }
+    if (!hit || now - hit.checkedAt > REMOTE_PROBE_TTL_MS) probeRemote(r.healthUrl);
+  }
+}
+
 function api(db, repo, url, cwdRepo, serverPort) {
   const q = url.searchParams;
   const p = url.pathname;
@@ -305,6 +367,7 @@ function api(db, repo, url, cwdRepo, serverPort) {
     }
     report.devCommandOverride = override || null;
     report.captureLink = captureLinkState();
+    annotateRemotes(report); // overlay cached remote-health probes; kicks async refresh if stale
     return report;
   }
   if (p === "/api/loose") return S.listLooseEnds(db, repo.id).map(decodeRefs);
@@ -477,6 +540,8 @@ async function writeApi(db, repo, url, body, serverPort) {
     const { services, error } = readServices(b.worktree);
     if (error) return { __status: 400, error };
     let service = services && services.find((s) => s.name === b.name);
+    if (service && service.location === "remote")
+      return { __status: 400, error: `service "${b.name}" is remote — there is nothing to start from here` };
     if (!service) {
       // No manifest entry: allow the fallback "dev" service via auto-detect / stored override.
       if (b.name === "dev") {
@@ -505,7 +570,9 @@ async function writeApi(db, repo, url, body, serverPort) {
     if (!b.worktree) return { __status: 400, error: "worktree required" };
     const { services, error } = readServices(b.worktree);
     if (error) return { __status: 400, error };
-    if (!services || !services.length) return { __status: 400, error: "no services declared" };
+    // Only local services are startable — remote ones (hosted infra) have nothing to launch.
+    const local = (services || []).filter((s) => s.location !== "remote");
+    if (!local.length) return { __status: 400, error: "no local services declared" };
     const slot = slotFor(repo, b.worktree);
     const stride = portStride(repo);
     // One scan up front tells us which effective ports are already listening.
@@ -513,7 +580,7 @@ async function writeApi(db, repo, url, body, serverPort) {
     const wt = report.worktrees.find((w) => w.path === b.worktree);
     const livePorts = new Set((wt ? wt.servers : []).map((s) => s.port));
     const results = [];
-    for (const s of services) {
+    for (const s of local) {
       const eff = effectivePort(s.port, slot, stride);
       const trackedLive = (() => { const t = serviceStatus(b.worktree, s.name); return t && !t.exited; })();
       if ((eff != null && livePorts.has(eff)) || trackedLive) {
@@ -532,8 +599,8 @@ async function writeApi(db, repo, url, body, serverPort) {
     const stride = portStride(repo);
     const report = worktreeReport(repo, { skipPid: process.pid, skipPort: serverPort });
     const wt = report.worktrees.find((w) => w.path === b.worktree);
-    // Everything declared, plus anything we're still tracking that isn't declared anymore.
-    const names = new Set((services || []).map((s) => s.name));
+    // Everything local declared, plus anything we're still tracking that isn't declared anymore.
+    const names = new Set((services || []).filter((s) => s.location !== "remote").map((s) => s.name));
     for (const n of trackedServiceNames(b.worktree)) names.add(n);
     const results = [];
     for (const name of names) {

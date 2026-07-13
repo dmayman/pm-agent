@@ -115,7 +115,12 @@ export function effectiveDevCommand(worktreePath, override) {
 //   { services: [...], error: null }  when present and valid,
 //   { services: null, error: "<msg>" } on malformed JSON / schema, and
 //   { services: null, error: null }    when the file is simply absent.
-// Each returned service is normalized: {name, command, cwd, port|null, health|null, url|null}.
+// Each service carries `location: "local" | "remote"` (default "local"). A local service is
+// normalized to {location, name, command, cwd, port|null, portEnv|null, health|null, url|null} —
+// something the dashboard can launch and port-scan. A remote service (hosted infra: Fly/Neon/
+// Vercel) has nothing to launch or bind, so it drops command/port/portEnv and instead carries
+// {location, name, provider|null, dashboard|null, url|null, health|null, branch|null} — the
+// dashboard only watches it (HTTP health-probe) and links to its console.
 export function readServices(worktreePath) {
   let raw;
   try {
@@ -133,15 +138,39 @@ export function readServices(worktreePath) {
   if (!list) return { services: null, error: ".pm/services.json: expected { \"services\": [ … ] }" };
   const services = [];
   const seen = new Set();
+  const str = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
   for (const s of list) {
     if (!s || typeof s.name !== "string" || !s.name.trim())
       return { services: null, error: ".pm/services.json: every service needs a non-empty name" };
-    if (typeof s.command !== "string" || !s.command.trim())
-      return { services: null, error: `.pm/services.json: service "${s.name}" needs a command` };
     if (seen.has(s.name))
       return { services: null, error: `.pm/services.json: duplicate service name "${s.name}"` };
     seen.add(s.name);
+    if (s.location != null && s.location !== "local" && s.location !== "remote")
+      return { services: null, error: `.pm/services.json: service "${s.name}" location must be "local" or "remote"` };
+    if (s.location === "remote") {
+      // Nothing to launch or bind — command/port/portEnv are meaningless for hosted infra, so
+      // reject them rather than silently ignore (a stray command here is almost always a mistake).
+      if (str(s.command))
+        return { services: null, error: `.pm/services.json: remote service "${s.name}" must not set a command (there is nothing to launch)` };
+      if (s.port != null)
+        return { services: null, error: `.pm/services.json: remote service "${s.name}" must not set a port (it isn't a local listener)` };
+      services.push({
+        location: "remote",
+        name: s.name,
+        provider: str(s.provider),   // free label for icon/grouping: "fly" | "neon" | "vercel" | …
+        dashboard: str(s.dashboard), // provider console URL for this service
+        url: str(s.url),             // the live/public URL of the service itself
+        // Full URL, or a path appended to `url`, that the observer polls for up/down. Absent →
+        // liveness is declared, not probed (shown neutrally, never falsely green/red).
+        health: str(s.health),
+        branch: str(s.branch),       // which branch/environment is deployed there ("main", "preview/x")
+      });
+      continue;
+    }
+    if (typeof s.command !== "string" || !s.command.trim())
+      return { services: null, error: `.pm/services.json: service "${s.name}" needs a command` };
     services.push({
+      location: "local",
       name: s.name,
       command: s.command,
       cwd: typeof s.cwd === "string" && s.cwd.trim() ? s.cwd : ".",
@@ -155,6 +184,22 @@ export function readServices(worktreePath) {
     });
   }
   return { services, error: null };
+}
+
+// Join a base URL and a path part, tolerating trailing/leading slashes; a path that is itself a
+// full http(s) URL wins outright.
+function joinUrl(base, pathPart) {
+  if (/^https?:\/\//i.test(pathPart)) return pathPart;
+  if (!base) return null;
+  return base.replace(/\/+$/, "") + "/" + String(pathPart).replace(/^\/+/, "");
+}
+
+// The URL the observer polls for a remote service's liveness, or null when it can't be probed —
+// no health declared (a hosted Postgres: liveness is declared, not probed), or a bare health path
+// with no `url` to resolve it against. A full http(s) health value is used as-is.
+export function remoteHealthUrl(s) {
+  if (!s || s.location !== "remote" || !s.health) return null;
+  return joinUrl(s.url, s.health);
 }
 
 // The repo-level opt-in config: `.pm/config.json`, checked in, Claude/human-authored. Read the
@@ -407,12 +452,39 @@ export function worktreeReport(repo, { skipPid, skipPort, devCommand, excludePat
 
   // Per-worktree declared services (from .pm/services.json), each enriched with live state.
   // Runs after the scan so port liveness is available. `devCommand` stays on each worktree for
-  // the no-manifest fallback the panel still renders.
+  // the no-manifest fallback the panel still renders. Only *local* services live on the worktree
+  // (they're the startable/port-scannable half); remote services are hoisted to the repo level
+  // below, since hosted infra is shared across branches, not owned by a single worktree.
+  const remoteServices = [];
+  const remoteSeen = new Set();
   for (const wt of worktrees) {
     const svc = readServices(wt.path);
     wt.servicesError = svc.error || null;
-    wt.servicesDeclared = Array.isArray(svc.services) && svc.services.length > 0;
-    wt.services = (svc.services || []).map((s) => enrichService(wt, s, listeningByPort, wt.portOffset));
+    const local = (svc.services || []).filter((s) => s.location !== "remote");
+    wt.servicesDeclared = local.length > 0;
+    wt.services = local.map((s) => enrichService(wt, s, listeningByPort, wt.portOffset));
+    // The repo-level Remote section is sourced from the primary (main) worktree's manifest — the
+    // canonical checked-in declaration of the hosted stack. (A feature branch may declare its own
+    // remotes; the primary is the stable source for the shared block.) `branch` labels which
+    // branch is *deployed* there, independent of the branch you have checked out.
+    if (wt.isMain) {
+      for (const s of svc.services || []) {
+        if (s.location !== "remote" || remoteSeen.has(s.name)) continue;
+        remoteSeen.add(s.name);
+        remoteServices.push({
+          name: s.name,
+          provider: s.provider,
+          dashboard: s.dashboard,
+          url: s.url,
+          health: s.health,
+          branch: s.branch,
+          healthUrl: remoteHealthUrl(s), // null when unprobeable
+          // "declared" = no health to probe (shown neutral forever); "unprobed" = has a health
+          // URL but no result yet. The server overlays "up"/"down" once a probe lands.
+          state: remoteHealthUrl(s) ? "unprobed" : "declared",
+        });
+      }
+    }
   }
 
   // Which branches are merged into the default — those with no worktree are "closed".
@@ -454,7 +526,7 @@ export function worktreeReport(repo, { skipPid, skipPort, devCommand, excludePat
 
   const worktreePanel = config.worktreePanel === "primary-preview" ? "primary-preview" : null;
 
-  return { defaultBranch: baseName || null, worktrees, branches, serverScanned, worktreePanel, portStride: stride };
+  return { defaultBranch: baseName || null, worktrees, branches, remoteServices, serverScanned, worktreePanel, portStride: stride };
 }
 
 // ---- write ops -------------------------------------------------------------

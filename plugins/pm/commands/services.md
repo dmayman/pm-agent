@@ -31,7 +31,11 @@ app servers, but the backing infrastructure they can't run without. Look at:
 }
 ```
 
-Fields:
+Every service is **local** by default (`location: "local"`) — something the dashboard launches on
+localhost. A repo whose stack is partly hosted (a DB on Neon, an API on Fly, a webapp on Vercel)
+declares those as **remote** services instead; see "Remote / hosted services" below.
+
+Fields (local services):
 - `name` (required) — unique display label (e.g. "API", "Operator UI").
 - `command` (required) — the exact shell command that starts the service and stays up.
 - `cwd` (optional) — directory to run in, relative to the repo root. Default `"."`.
@@ -95,6 +99,50 @@ cramming everything into the `command` string — but either works. Leave the ba
 no-offset default everywhere, so slot 0 and any non-pm-agent run are unchanged. If a service
 genuinely can't be relocated, still declare `portEnv` and note the limitation to the user;
 single-worktree use is unaffected either way.
+
+**Remote / hosted services (Fly, Neon, Vercel, …).** Not every part of the stack runs on the
+laptop. A DB on Neon is already up — there's nothing to "start," you just want to know it's
+reachable and jump to its console. A deployed API/webapp runs a particular branch at a public URL.
+And a local checkout frequently *connects to* a remote dependency (local `main` → a remote dev DB)
+rather than running its own. Model all of these as **remote** services so the dashboard watches
+them instead of pretending they're localhost servers you forgot to start.
+
+A remote service sets `"location": "remote"` and **drops `command`/`port`/`portEnv`** (there's
+nothing to launch or bind — declaring any of them is an error). It carries instead:
+- `provider` (optional) — a free label for the icon/grouping: `"fly" | "neon" | "vercel" | …`.
+- `dashboard` (optional) — URL to the provider's console for this service (the Neon project, the
+  Fly app, the Vercel project). The panel shows a console link.
+- `url` (optional) — the live/public URL of the service itself (the deployed API base or webapp
+  origin). The panel shows an open-service link.
+- `health` (optional) — a full URL, **or a path appended to `url`**, that the observer polls to
+  decide up/down. Omit it for a non-HTTP remote (a hosted Postgres): liveness is then *declared,
+  not probed* — shown neutrally, never falsely green or red.
+- `branch` (optional) — which branch/environment is deployed there (`"main"`, `"production"`,
+  `"preview/<slug>"`). This is informational: it labels which branch's code is live at that remote,
+  independent of the branch you have checked out. A shared dependency with no deployed-code notion
+  (a DB) simply omits it — that absence is how the panel tells "a deployment of branch X" apart
+  from "a shared dependency this branch connects to." (There's no separate `connects` flag.)
+
+```json
+{
+  "services": [
+    { "name": "API", "location": "remote", "provider": "fly",
+      "dashboard": "https://fly.io/apps/acme-api", "url": "https://acme-api.fly.dev",
+      "health": "/health", "branch": "main" },
+    { "name": "DB", "location": "remote", "provider": "neon",
+      "dashboard": "https://console.neon.tech/app/projects/xxxx", "branch": "main" },
+    { "name": "Web", "location": "remote", "provider": "vercel",
+      "dashboard": "https://vercel.com/acme/web", "url": "https://acme-web.vercel.app",
+      "health": "/", "branch": "main" }
+  ]
+}
+```
+
+Remote services surface in a single repo-level **Remote** section of the panel (below the branch
+list — hosted infra is shared across branches, not owned by the checked-out worktree), each with a
+status dot (up / down / neutral-unprobed), its provider, the deployed branch, and the console +
+service links. There is **no** Start/Stop (you can't boot Neon from here). Local and remote can mix
+freely in one manifest — a repo with a local API + UI but a remote dev DB is the common case.
 
 Guidance:
 - **Assume a cold machine — nothing is already running.** The whole point is that the user
