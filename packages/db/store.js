@@ -214,7 +214,7 @@ function applySchema(db) {
   ensureColumn(db, "issue_titles", "branch", "TEXT"); // an open branch for this issue, if any
   ensureColumn(db, "issue_titles", "status", "TEXT"); // todo | in_progress | done
   ensureColumn(db, "issue_titles", "thread_id", "INTEGER"); // initiative this issue belongs to
-  ensureColumn(db, "issue_titles", "pinned", "INTEGER DEFAULT 0"); // 1 = membership set by hand, don't auto-recluster
+  ensureColumn(db, "issue_titles", "pinned", "INTEGER DEFAULT 0"); // 1 = membership set by hand; automatic links never move it
 }
 
 let _db;
@@ -611,7 +611,7 @@ export function pinIssueToThread(db, repoId, number, threadId) {
 
 // A SOFT (unpinned) initiative link — the observer's bridge from an event's refs.issue to
 // the thread it created. Ensures the issue row exists first (title backfills on the next
-// sync), then attaches it WITHOUT pinning, so the next recluster can still re-home it. Never
+// sync), then attaches it WITHOUT pinning, so a later soft link can still re-home it. Never
 // overrides a manual pin (pinned = 1).
 export function linkIssueToThread(db, repoId, number, threadId) {
   db.prepare("INSERT OR IGNORE INTO issue_titles (repo_id, number, title) VALUES (?, ?, ?)").run(
@@ -624,8 +624,8 @@ export function linkIssueToThread(db, repoId, number, threadId) {
   ).run(threadId, repoId, Number(number));
 }
 
-// Release a pin so the next recluster is free to re-home the issue. Leaves current
-// membership in place until then.
+// Release a pin so automatic (soft) links are free to re-home the issue again. Leaves
+// current membership in place until something does.
 export function unpinIssue(db, repoId, number) {
   db.prepare("UPDATE issue_titles SET pinned = 0 WHERE repo_id = ? AND number = ?").run(
     repoId,

@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import * as S from "../../packages/db/store.js";
 import { threadWorkStatus } from "../../packages/db/work.js";
+import { pidAlive } from "../../packages/db/util.js";
 import {
   worktreeReport,
   effectiveDevCommand,
@@ -63,14 +64,6 @@ function observerAlias(port) {
 //     "not your real ledger" banner, and which branch it's serving.
 //   · THIS server is the real one → look for a live preview via the rendezvous file the
 //     `preview` command drops in the real home, so the dashboard can link to it.
-function pidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e.code === "EPERM";
-  }
-}
 function previewInfo() {
   if (process.env.PM_AGENT_PREVIEW === "1") {
     // The preview knows its own branch and a link back to the real observer (for the env toggle).
@@ -786,7 +779,10 @@ export function serve({ port = 4477, cwd = process.cwd() } = {}) {
     }
   });
 
-  server.listen(port, () => {
+  // Loopback only — this is a local, same-origin-guarded surface, and the observer-url pf
+  // redirect (scripts/observer-hostname-setup.sh) rewrites lo0 traffic to 127.0.0.1, so
+  // nothing legitimate ever arrives on a LAN interface.
+  server.listen(port, "127.0.0.1", () => {
     // Record the real observer's URL so `pm-agent preview` can link the preview back here (the env
     // toggle). Only the real server does this — a preview must not overwrite the parent's pointer.
     if (process.env.PM_AGENT_PREVIEW !== "1") {

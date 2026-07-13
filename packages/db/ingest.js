@@ -3,31 +3,8 @@
 // #-glossary (issue number -> human title) and clear PR-merge milestones. Per-commit
 // build narration is left to the observer, which is more digestible than raw WIP commits.
 
-import { execFileSync } from "node:child_process";
 import * as S from "./store.js";
-
-function sh(cmd, args, cwd) {
-  try {
-    return execFileSync(cmd, args, {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      maxBuffer: 8 * 1024 * 1024,
-    });
-  } catch {
-    return null;
-  }
-}
-
-function ghJson(args, cwd) {
-  const out = sh("gh", args, cwd);
-  if (out == null) return null;
-  try {
-    return JSON.parse(out);
-  } catch {
-    return null;
-  }
-}
+import { sh, ghJson, branchIssue } from "./util.js";
 
 // Sync the issue glossary from GitHub. Returns count, or null if gh is unavailable.
 export function syncGlossary(db, repo, { limit = 200 } = {}) {
@@ -42,12 +19,6 @@ export function syncGlossary(db, repo, { limit = 200 } = {}) {
     n++;
   }
   return n;
-}
-
-// The first issue number encoded in a branch name (feat/41-x, issue-32-y → 41, 32).
-function branchIssue(branch) {
-  const m = /(\d+)/.exec(branch || "");
-  return m ? Number(m[1]) : null;
 }
 
 // Record merged PRs as `merged` milestone events, threaded under their issue. `skipPRs`
@@ -198,12 +169,12 @@ export function ingest(db, repo, opts = {}) {
   };
 }
 
-// The full pipeline: identity + lifecycle + backfill + semantic grouping. This is what
-// `enable`, `ingest`, and `recluster` build on. onPhase(name) reports progress.
+// The full pipeline: identity + lifecycle + backfill. This is what `setup`/`enable` and
+// `ingest` build on. onPhase(name) reports progress. No grouping pass: initiatives are
+// live-captured goals that issues attach to incrementally (pin/link), never rebuilt in
+// batch. (Backfilling historical work into initiatives is deferred — see issue #27.)
 export async function runFullIngest(db, repo, { onPhase = () => {} } = {}) {
-  const { syncIssues, syncOpenBranches, computeStatuses, clusterIntoInitiatives } = await import(
-    "./work.js"
-  );
+  const { syncIssues, syncOpenBranches, computeStatuses } = await import("./work.js");
   onPhase("issues");
   const issues = syncIssues(db, repo); // identity + open/closed state
   onPhase("commits");
@@ -213,14 +184,11 @@ export async function runFullIngest(db, repo, { onPhase = () => {} } = {}) {
   onPhase("lifecycle");
   const branches = syncOpenBranches(db, repo); // unfinished branches
   computeStatuses(db, repo); // todo | in_progress | done
-  onPhase("cluster");
-  const initiatives = await clusterIntoInitiatives(db, repo); // regroup into root ideas
   return {
     issues,
     commits: cb.count,
     merged,
     branches,
-    initiatives,
     ghAvailable: issues !== null,
   };
 }
